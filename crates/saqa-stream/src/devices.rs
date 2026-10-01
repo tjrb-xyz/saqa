@@ -1,11 +1,14 @@
-//! What saqa is told about this machine's devices, by whoever runs it (dsper
-//! passes its own; see docs/CONFIG.md):
+//! What saqa is told about this machine's devices, by whoever runs it
+//! (docs/CONFIG.md). Until saqa can ask audio-engine for its loopbacks, this
+//! is how it learns which device is the engine's streaming loopback:
 //!
-//! - **sinks**: the inputs a received stream may play into. A receive link
-//!   into anything else is refused (422). With none, no receive link is
-//!   allowed: saqa never guesses which devices are safe to play into.
-//! - **aliases**: words that name a device here, such as `stream` for
-//!   `dsper stream 16ch`. An alias may name one device, or one to capture
+//! - **sinks**: the devices a received stream may play into: the streaming
+//!   loopback. A receive link into anything else is refused (422). With none,
+//!   no receive link is allowed: saqa never guesses which devices are safe to
+//!   play into.
+//! - **aliases**: words that name a device here, such as `stream` for the
+//!   streaming loopback (`dsper stream 16ch` on a machine with dsper today).
+//!   An alias may name one device, or one to capture
 //!   from (`send`) and another to play into (`receive`), as an ALSA loopback
 //!   does (`hw:CARD=dsperstream,DEV=1` and `DEV=0`).
 

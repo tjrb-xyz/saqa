@@ -47,7 +47,9 @@ Nothing in the routes, bodies, statuses or `LinkSpec`/`LinkView`. Only:
   It is chosen by the kind of refusal, no longer by matching that text.
 - **The 503 text** (and `/state`'s `detail`) says to run saqa's `scripts/roc.sh` or set `SAQA_LIBROC`, where it
   named dsper's `scripts/mac.sh roc` / `scripts/linux.sh roc` and `DSPER_LIBROC`.
-- **Sinks and aliases are configuration.** `system`, `daw` and `stream`, and which inputs may receive, mean what
-  saqad is told (docs/CONFIG.md "What dsper passes"); unconfigured, it allows no receive link.
+- **Sinks and aliases are configuration.** `system`, `daw` and `stream`, and which devices may receive, mean what
+  saqad is told (docs/CONFIG.md, "Pointing saqad at the streaming loopback"); unconfigured, it allows no receive
+  link. The recommended setup allows only the engine's streaming loopback, so a receive link into `system` or
+  `daw`, which dsper allowed, is now 422 unless they are added as sinks.
 - **Served alone, on loopback only.** dsperd's `--listen` and TLS did not move: dsperd stays the door other
   machines' clients use, and saqad answers it on 127.0.0.1.

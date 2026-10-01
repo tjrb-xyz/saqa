@@ -2,17 +2,17 @@
 //!
 //! A **link** carries up to 16 channels one way:
 //!
-//! - a *send* link captures chosen channels of a device here (`dsper daw
-//!   16ch` 5–6, an interface's inputs where a drum machine is plugged in)
-//!   and streams them to another machine;
+//! - a *send* link captures chosen channels of a device here (a loopback
+//!   such as the DAW's, 5–6, or an interface's inputs where a drum machine is
+//!   plugged in) and streams them to another machine;
 //! - a *receive* link listens on a port and plays what arrives into chosen
-//!   channels of an input this machine allows (its [`Devices`] sinks: with
-//!   dsper, one of dsper's own inputs, normally `dsper stream 16ch`), where
-//!   the local mix, patches and safety check take over.
+//!   channels of audio-engine's streaming loopback (its [`Devices`] sinks;
+//!   `dsper stream 16ch` on a machine with dsper today), from where dsper
+//!   routes it through its DSP.
 //!
 //! That last rule is the safety line: audio from the network never reaches
-//! an interface directly. It lands in an allowed input, and only this
-//! machine's checked pipeline decides what the speakers get. A receive link
+//! an interface directly. It lands in the streaming loopback, and only this
+//! machine's engine and dsper decide what the speakers get. A receive link
 //! into anything else is refused, and with no sinks configured every receive
 //! link is.
 //!

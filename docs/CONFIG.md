@@ -1,11 +1,12 @@
 # Configuring saqad
 
-saqad knows nothing about the machine it runs on until it is told. Whoever runs it (dsper, or a person) says:
+saqad knows nothing about the machine it runs on until it is told. Whoever runs it (dsperd, or a person) says:
 
-- **which inputs a received stream may play into** (`sinks`). A receive link into anything else is refused with
-  422. With no sinks, every receive link is refused: saqa never guesses which devices are safe to play into;
-- **what the role words mean** (`aliases`), such as `stream` for `dsper stream 16ch`. An alias names one device,
-  or one to capture from for a send link and another to play into for a receive link;
+- **which devices a received stream may play into** (`sinks`): the engine's streaming loopback
+  (docs/AUDIO-ENGINE.md, "Who does what"). A receive link into anything else is refused with 422. With no sinks,
+  every receive link is refused: saqa never guesses which devices are safe to play into;
+- **what the role words mean** (`aliases`), such as `stream` for the streaming loopback's device. An alias names
+  one device, or one to capture from for a send link and another to play into for a receive link;
 - **where it keeps its links** and **its token**, when the defaults below do not suit.
 
 Everything can be given as flags, in a JSON file, or both.
@@ -62,54 +63,70 @@ An alias word is letters, digits, `-` and `_`. A device name that is not an alia
 Every key is optional; an unknown key is an error (so a typo does not silently allow nothing). Flags apply
 over the file: lists add, an alias flag replaces that alias (or that direction of it), the rest replace.
 
-## What dsper passes
+## Pointing saqad at the streaming loopback
 
-This is dsper's knowledge that `dsper-stream` hard-coded (`is_dsper_input` and `resolve`, dsper@7afd988
-`crates/dsper-stream/src/lib.rs:69-106`), now given to saqad. It keeps dsper's behaviour exactly.
+audio-engine owns the virtual devices; dsper may summon them from the engine and routes through them. Until saqa
+can ask the engine for its loopbacks itself (docs/AUDIO-ENGINE.md), whoever runs saqad names them. On a machine
+with dsper today, the loopbacks show to the OS under dsper's names:
 
-**macOS** (dsper's driver devices):
+| Loopback | macOS | Linux: the side saqa plays into | Linux: the side saqa reads |
+|---|---|---|---|
+| streaming | `dsper stream 16ch` | `hw:CARD=dsperstream,DEV=0` | `hw:CARD=dsperstream,DEV=1` |
+| what the computer plays | `dsper system 2ch` | | `hw:CARD=dspersystem,DEV=1` |
+| what the DAW plays | `dsper daw 16ch` | | `hw:CARD=dsperdaw,DEV=1` |
+
+**The setup to use:** a received stream lands only in the streaming loopback, and dsper routes it from there. A
+send link may read any of the three.
+
+macOS:
 
 ```sh
-saqad --port 8486 \
-  --sink 'dsper system 2ch' --sink 'dsper daw 16ch' --sink 'dsper stream 16ch' \
-  --alias 'system=dsper system 2ch' --alias 'daw=dsper daw 16ch' --alias 'stream=dsper stream 16ch' \
+saqad --sink 'dsper stream 16ch' \
+  --alias 'stream=dsper stream 16ch' --alias 'system=dsper system 2ch' --alias 'daw=dsper daw 16ch' \
   --import-links ~/.config/dsper/streams.json
 ```
 
-**Linux** (dsper's snd-aloop cards: device 0 is the side apps play into, so a receive link plays there;
-device 1 is the side dsper captures, so a send link captures there):
+Linux:
 
 ```sh
-saqad --port 8486 \
-  --sink 'hw:CARD=dspersystem,DEV=0' --sink 'plughw:CARD=dspersystem,DEV=0' \
-  --sink 'hw:CARD=dsperdaw,DEV=0'    --sink 'plughw:CARD=dsperdaw,DEV=0' \
-  --sink 'hw:CARD=dsperstream,DEV=0' --sink 'plughw:CARD=dsperstream,DEV=0' \
-  --alias-receive 'system=hw:CARD=dspersystem,DEV=0' --alias-send 'system=hw:CARD=dspersystem,DEV=1' \
-  --alias-receive 'daw=hw:CARD=dsperdaw,DEV=0'       --alias-send 'daw=hw:CARD=dsperdaw,DEV=1' \
+saqad --sink 'hw:CARD=dsperstream,DEV=0' --sink 'plughw:CARD=dsperstream,DEV=0' \
   --alias-receive 'stream=hw:CARD=dsperstream,DEV=0' --alias-send 'stream=hw:CARD=dsperstream,DEV=1' \
+  --alias 'system=hw:CARD=dspersystem,DEV=1' --alias 'daw=hw:CARD=dsperdaw,DEV=1' \
   --import-links ~/.config/dsper/streams.json
 ```
 
-The same as a file dsper writes (say `~/.config/dsper/saqad.json`) and passes with `--config`, Linux:
+The same as a file (say `~/.config/dsper/saqad.json`, passed with `--config`), Linux:
 
 ```json
 {
-  "sinks": [
-    "hw:CARD=dspersystem,DEV=0", "plughw:CARD=dspersystem,DEV=0",
-    "hw:CARD=dsperdaw,DEV=0", "plughw:CARD=dsperdaw,DEV=0",
-    "hw:CARD=dsperstream,DEV=0", "plughw:CARD=dsperstream,DEV=0"
-  ],
+  "sinks": ["hw:CARD=dsperstream,DEV=0", "plughw:CARD=dsperstream,DEV=0"],
   "aliases": {
-    "system": { "send": "hw:CARD=dspersystem,DEV=1", "receive": "hw:CARD=dspersystem,DEV=0" },
-    "daw": { "send": "hw:CARD=dsperdaw,DEV=1", "receive": "hw:CARD=dsperdaw,DEV=0" },
-    "stream": { "send": "hw:CARD=dsperstream,DEV=1", "receive": "hw:CARD=dsperstream,DEV=0" }
+    "stream": { "send": "hw:CARD=dsperstream,DEV=1", "receive": "hw:CARD=dsperstream,DEV=0" },
+    "system": "hw:CARD=dspersystem,DEV=1",
+    "daw": "hw:CARD=dsperdaw,DEV=1"
   },
   "import_links": "/home/me/.config/dsper/streams.json"
 }
 ```
 
-Not a sink, as before: `dsper in 16ch` / `hw:CARD=dsperin16,…` (what dsper hands back to apps), any `DEV=1`
-side, and every interface.
+With these, a receive link into `system` or `daw` is refused (422): those loopbacks carry what this machine
+plays, and receiving into them is dsper's routing to decide, not saqa's.
+
+**dsper's old behaviour, exactly.** `dsper-stream` also let a receive link play into `dsper system Nch` and
+`dsper daw Nch` (`is_dsper_input` and `resolve`, dsper@7afd988 `crates/dsper-stream/src/lib.rs:69-106`). To keep
+that, add them as sinks, and on Linux give `system` and `daw` their `DEV=0` side for receiving:
+
+```sh
+# macOS, in addition to the above
+--sink 'dsper system 2ch' --sink 'dsper daw 16ch'
+# Linux, in addition to the above
+--sink 'hw:CARD=dspersystem,DEV=0' --sink 'plughw:CARD=dspersystem,DEV=0' \
+--sink 'hw:CARD=dsperdaw,DEV=0' --sink 'plughw:CARD=dsperdaw,DEV=0' \
+--alias-receive 'system=hw:CARD=dspersystem,DEV=0' --alias-receive 'daw=hw:CARD=dsperdaw,DEV=0'
+```
+
+Never a sink, either way: `dsper in 16ch` / `hw:CARD=dsperin16,…` (what dsper hands back to apps), any interface,
+and on Linux any `DEV=1` side.
 
 ### The token
 

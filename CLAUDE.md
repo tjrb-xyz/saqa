@@ -1,16 +1,17 @@
 # CLAUDE.md: saqa
 
 saqa carries audio between machines (Roc links, `/stream/v1`). It came from dsper (tjrb-xyz/dsper@7afd988;
-dsper's docs/SAQA.md and docs/research/OWNER-DECISIONS.md #17). dsper keeps its loopback devices and calls this
-API through dsperd, so **the API is a contract**: routes, bodies, statuses, `LinkSpec` and `LinkView` change only
-together with dsper (docs/API.md lists every difference from dsper's service). If code and docs disagree, fix one
+dsper's docs/SAQA.md and docs/research/OWNER-DECISIONS.md #17). audio-engine carries the audio and owns the virtual
+devices (dsper may summon them); dsper does DSP and routing; saqa reads from and plays into the engine's streaming
+loopback (docs/AUDIO-ENGINE.md, "Who does what"). dsper calls this API through dsperd, so **the API is a
+contract**: routes, bodies, statuses, `LinkSpec` and `LinkView` change only together with dsper (docs/API.md lists every difference from dsper's service). If code and docs disagree, fix one
 of them in the same change.
 
 ## Non-negotiables
 1. **A stream never plays straight into an interface.** A receive link plays only into a configured sink
    (`Devices::allows`); anything else is `Refused::NotAnInput` → 422. No sinks means no receive link. saqa never
-   guesses a safe device, and never hard-codes a host's device names (dsper's live in docs/CONFIG.md, passed as
-   configuration).
+   guesses a safe device, and never hard-codes a host's device names (the streaming loopback's names live in
+   docs/CONFIG.md, passed as configuration).
 2. **The API is behind the guard.** Every route needs the bearer token except `/stream/v1/health`; Host and
    Origin are checked (`saqa_stream::service`). saqad listens on loopback only; no TLS here.
 3. **Speakers never wait on the network.** Device callbacks only touch the rtrb ring of whole frames (`pump.rs`);

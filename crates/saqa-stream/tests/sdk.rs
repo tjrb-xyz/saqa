@@ -138,7 +138,10 @@ fn an_app_receives_a_saqa_send_link() {
     assert!(out.status.success(), "{text}");
     assert!(text.starts_with("connections 1"), "{text}");
     // A gap under load lowers every channel alike; a channel landing on the
-    // wrong channel changes its ratio. Channel c carries (c)/32.
+    // wrong channel changes its ratio. Channel c carries (c)/32. So the ratios
+    // must agree closely, while the level itself only shows the stream ran:
+    // a busy CI runner leaves gaps in the app's own 30 ms ring (macOS on
+    // GitHub's runners measured 0.889 with every channel in place).
     let ratios: Vec<f32> = text
         .lines()
         .skip(1)
@@ -150,7 +153,7 @@ fn an_app_receives_a_saqa_send_link() {
     assert_eq!(ratios.len(), 16, "{text}");
     for r in &ratios {
         assert!(
-            (r - ratios[0]).abs() < 0.01 && *r > 0.9,
+            (r - ratios[0]).abs() < 0.01 && *r > 0.5,
             "each daw channel on its own app channel: {text}"
         );
     }

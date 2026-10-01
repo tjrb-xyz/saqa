@@ -241,3 +241,47 @@ fn dspers_kept_links_are_imported_once() {
     assert_eq!(std::fs::read_to_string(&ours).unwrap().trim(), "{}");
     assert!(old.exists(), "dsper's file is left where it was");
 }
+
+/// docs/CONFIG.md's setup: a received stream lands only in the engine's
+/// streaming loopback; a send link may read any loopback.
+#[test]
+fn the_recommended_setup_receives_only_into_the_streaming_loopback() {
+    let d = start(
+        &[
+            "--memory",
+            "--sink",
+            "dsper stream 16ch",
+            "--alias",
+            "stream=dsper stream 16ch",
+            "--alias",
+            "system=dsper system 2ch",
+            "--alias",
+            "daw=dsper daw 16ch",
+        ],
+        "/stream/v1/health",
+    );
+    let (_, state) = call(d.1, "GET", "/stream/v1/state", None);
+    let ok = if state["available"] == true { 200 } else { 503 };
+    let receive = |device: &str| {
+        json!({"direction": "receive", "device": device, "channels": [0, 1],
+               "port": free_port().clamp(1024, 60000)})
+    };
+    let (status, v) = call(d.1, "PUT", "/stream/v1/links/in", Some(receive("stream")));
+    assert_eq!(status, ok, "{v}");
+    for into in ["system", "daw", "dsper system 2ch"] {
+        let (status, v) = call(d.1, "PUT", "/stream/v1/links/x", Some(receive(into)));
+        assert_eq!(status, 422, "{into}: {v}");
+    }
+    let (status, v) = call(
+        d.1,
+        "PUT",
+        "/stream/v1/links/out",
+        Some(
+            json!({"direction": "send", "device": "daw", "channels": [4, 5], "to": "127.0.0.1:20000"}),
+        ),
+    );
+    assert_eq!(status, ok, "{v}");
+    if ok == 200 {
+        assert_eq!(v["device"], "dsper daw 16ch", "{v}");
+    }
+}

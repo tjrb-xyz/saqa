@@ -9,8 +9,12 @@ A **link** goes one way:
 
 - a **send** link captures chosen channels of a device on this machine (a role such as `daw`, or an
   interface's inputs where an instrument is plugged in) and streams them to `host:port`;
-- a **receive** link listens on a port and plays what arrives into chosen channels of an input this machine
-  allows. With dsper that is one of dsper's inputs, normally **dsper stream 16ch**.
+- a **receive** link listens on a port and plays what arrives into chosen channels of audio-engine's
+  **streaming loopback**, a virtual device the engine owns (with dsper today it shows as **dsper stream 16ch**).
+  dsper routes it from there, through its DSP, to speakers.
+
+audio-engine carries the audio and owns the virtual devices; dsper does DSP and routing, and may summon those
+devices from the engine; saqa carries audio between machines (docs/AUDIO-ENGINE.md, "Who does what").
 
 **A stream never plays straight into an interface.** It lands only in an input saqad was told it may play into
 (its *sinks*, docs/CONFIG.md), and from there the receiving machine's own pipeline decides what reaches its
@@ -28,9 +32,9 @@ cargo build --release
 target/release/saqad --sink 'dsper stream 16ch' --alias 'stream=dsper stream 16ch'
 ```
 
-saqad serves `/stream/v1` on `127.0.0.1:8486` (docs/API.md). With dsper, dsperd runs or reaches saqad, passes
-dsper's inputs and role words (docs/CONFIG.md, "What dsper passes"), and serves the same API to dsper's web UI
-and MCP tools; whether streaming is on is dsper's setting.
+saqad serves `/stream/v1` on `127.0.0.1:8486` (docs/API.md). With dsper, dsperd runs or reaches saqad, names the
+streaming loopback and the role words (docs/CONFIG.md, "Pointing saqad at the streaming loopback"), and serves
+the same API to dsper's web UI and MCP tools; whether streaming is on is dsper's setting.
 
 saqad finds libroc at `SAQA_LIBROC`, then in the checkout's `.saqa/lib`, then in Homebrew's lib directories
 (macOS), then through the system's library path. Without it saqad still runs: `/state` says what to install, and
