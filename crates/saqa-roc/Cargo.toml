@@ -1,0 +1,12 @@
+[package]
+name = "saqa-roc"
+version = "0.0.0"
+description = "Roc Toolkit (libroc 0.4, MPL-2.0) for saqa: network audio streams between machines, loaded at run time."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+libloading = "0.9.0"
