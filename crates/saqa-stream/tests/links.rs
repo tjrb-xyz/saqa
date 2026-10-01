@@ -6,11 +6,24 @@
 use axum::body::Body;
 use http_body_util::BodyExt;
 use saqa_stream::audio::MemoryAudio;
-use saqa_stream::{rest, LinkSpec, StreamService};
+use saqa_stream::{rest, Devices, LinkSpec, StreamService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tower::ServiceExt;
+
+/// What dsper tells saqa (docs/CONFIG.md): its inputs on macOS, which the
+/// memory devices here stand in for.
+fn dsper() -> Devices {
+    Devices {
+        sinks: vec![
+            "dsper system 2ch".into(),
+            "dsper daw 16ch".into(),
+            "dsper stream 16ch".into(),
+        ],
+        ..Default::default()
+    }
+}
 
 fn roc_here() -> bool {
     match StreamService::available() {
@@ -55,9 +68,9 @@ fn channels_travel_from_one_machine_into_the_others_stream_input() {
     }
     // Machine A's daw input carries channel c at level (c+1)/32.
     let levels: Vec<f32> = (0..16).map(|c| (c + 1) as f32 / 32.0).collect();
-    let a = StreamService::start(Arc::new(MemoryAudio::with_levels(levels)), None);
+    let a = StreamService::start(Arc::new(MemoryAudio::with_levels(levels)), dsper(), None);
     let b_audio = MemoryAudio::default();
-    let b = StreamService::start(Arc::new(b_audio.clone()), None);
+    let b = StreamService::start(Arc::new(b_audio.clone()), dsper(), None);
     let port = free_base_port();
 
     b.put(
@@ -119,7 +132,7 @@ fn a_device_that_is_not_there_fails_the_link_and_says_why() {
     if !roc_here() {
         return;
     }
-    let s = StreamService::start(Arc::new(MemoryAudio::default()), None);
+    let s = StreamService::start(Arc::new(MemoryAudio::default()), dsper(), None);
     s.put(
         "x",
         LinkSpec::Receive {
@@ -150,11 +163,15 @@ fn links_are_kept_and_come_back_with_saqad() {
         latency_ms: 100,
     };
     {
-        let s = StreamService::start(Arc::new(MemoryAudio::default()), Some(file.clone()));
+        let s = StreamService::start(
+            Arc::new(MemoryAudio::default()),
+            dsper(),
+            Some(file.clone()),
+        );
         s.put("kept", spec.clone()).unwrap();
         s.shutdown();
     }
-    let again = StreamService::start(Arc::new(MemoryAudio::default()), Some(file));
+    let again = StreamService::start(Arc::new(MemoryAudio::default()), dsper(), Some(file));
     let links = again.links();
     assert_eq!((links[0].id.as_str(), &links[0].spec), ("kept", &spec));
     again.shutdown();
@@ -183,7 +200,11 @@ async fn call(app: &axum::Router, method: &str, path: &str, body: Value) -> (u16
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_api_refuses_a_stream_into_an_interface() {
-    let app = rest::router(StreamService::start(Arc::new(MemoryAudio::default()), None));
+    let app = rest::router(StreamService::start(
+        Arc::new(MemoryAudio::default()),
+        dsper(),
+        None,
+    ));
     let (status, v) = call(
         &app,
         "PUT",
@@ -210,9 +231,9 @@ fn sixteen_channels_arrive_each_on_its_own_channel() {
         return;
     }
     let levels: Vec<f32> = (0..16).map(|c| (c + 1) as f32 / 32.0).collect();
-    let a = StreamService::start(Arc::new(MemoryAudio::with_levels(levels)), None);
+    let a = StreamService::start(Arc::new(MemoryAudio::with_levels(levels)), dsper(), None);
     let b_audio = MemoryAudio::default();
-    let b = StreamService::start(Arc::new(b_audio.clone()), None);
+    let b = StreamService::start(Arc::new(b_audio.clone()), dsper(), None);
     let port = free_base_port();
     b.put(
         "in",

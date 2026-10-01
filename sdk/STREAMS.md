@@ -1,17 +1,17 @@
-# dsper streams, for apps
+# saqa streams, for apps
 
-An app can send its audio to a dsper machine, or play what a dsper machine sends it, over the network, with no
-dsper and no virtual device on the app's own computer. A synth sends its 16 outputs to the studio's dsper; a DAW
-records a drum machine plugged into another machine's dsper. The app is the far end of a dsper **link**
+An app can send its audio to a machine running saqa, or play what one sends it, over the network, with no saqa
+and no virtual device on the app's own computer. A synth sends its 16 outputs to the studio; a DAW records a drum
+machine plugged into another machine. The app is the far end of a saqa **link**
 ([docs/STREAMING.md](../docs/STREAMING.md)):
 
-- **app → dsper:** the dsper machine has a *receive* link on a port (Streams → Receive, into `stream`). The app
-  sends to `host:port`. What arrives lands in that machine's **dsper stream 16ch** input, and its speakers take
-  it from there under their own protection. **The app cannot reach an interface directly**: that rule is the
-  receiving dsper's, and nothing a sender does changes it.
-- **dsper → app:** the app listens on a port; the dsper machine has a *send* link to `app-host:port`.
+- **app → saqa:** the receiving machine has a *receive* link on a port (with dsper: Streams → Receive, into
+  `stream`). The app sends to `host:port`. What arrives lands only in an input that machine allows (with dsper,
+  its **dsper stream 16ch** input), and its speakers take it from there under their own protection. **The app
+  cannot reach an interface directly**: that rule is the receiving saqa's, and nothing a sender does changes it.
+- **saqa → app:** the app listens on a port; the other machine has a *send* link to `app-host:port`.
 
-MIT, like everything under `sdk/`. It uses [Roc](https://github.com/roc-streaming/roc-toolkit) (libroc 0.4,
+MIT, like all of saqa. It uses [Roc](https://github.com/roc-streaming/roc-toolkit) (libroc 0.4,
 MPL-2.0): `scripts/roc.sh` builds it into `.saqa/lib`, with its headers in `.saqa/include`.
 
 ## C++ and JUCE: `cpp/include/saqa/stream.h`
@@ -43,17 +43,17 @@ then silence. `connections()`, `droppedFrames()` and `shortFrames()` say how the
 Build: `-I sdk/cpp/include -I .saqa/include -L .saqa/lib -lroc` (and `-pthread`). In CMake:
 
 ```cmake
-target_include_directories(my_app PRIVATE path/to/dsper/sdk/cpp/include path/to/dsper/.saqa/include)
-target_link_directories(my_app PRIVATE path/to/dsper/.saqa/lib)
+target_include_directories(my_app PRIVATE path/to/saqa/sdk/cpp/include path/to/saqa/.saqa/include)
+target_link_directories(my_app PRIVATE path/to/saqa/.saqa/lib)
 target_link_libraries(my_app PRIVATE roc)
 ```
 
 The working example is `cpp/examples/stream_levels.cpp`: an app sending 16 channels from a simulated device
-callback of 256 frames, and one receiving. `crates/saqa-stream/tests/sdk.rs` runs it against real dsper links,
+callback of 256 frames, and one receiving. `crates/saqa-stream/tests/sdk.rs` runs it against real saqa links,
 both directions, and checks that every one of 16 channels arrives on its own channel.
 
 The stream is 48 kHz. An app running at another rate resamples before `push` (juce::LagrangeInterpolator,
-libsamplerate) — dsper's receive side corrects clock *drift*, not a different nominal rate.
+libsamplerate) — saqa's receive side corrects clock *drift*, not a different nominal rate.
 
 `StreamSender` and `StreamReceiver` are the blocking layer beneath them (`write` and `read` take as long as the
 audio lasts), for a thread that already runs at audio pace.
@@ -70,7 +70,7 @@ A link is standard Roc on three UDP ports from the one chosen, P:
 
 - **Stereo:** Roc's built-in `ROC_PACKET_ENCODING_AVP_L16_STEREO`, 5 ms packets. Any Roc peer interoperates:
   `roc-send`, `roc-recv`, roc-vad, PipeWire's Roc modules.
-- **1 and 3–16 channels:** dsper's multitrack encodings. Register, in the context of both ends, encoding id
+- **1 and 3–16 channels:** saqa's multitrack encodings. Register, in the context of both ends, encoding id
   **100 + channels** as `{rate: 48000, format: ROC_FORMAT_PCM_FLOAT32, channels: ROC_CHANNEL_LAYOUT_MULTITRACK,
   tracks: channels}`, and send with that packet encoding. Packets are `min(240, 1200 / (channels × 4))` frames
   long, so a packet fits one UDP datagram.
@@ -78,7 +78,8 @@ A link is standard Roc on three UDP ports from the one chosen, P:
 
 ## Why a stream lands in an input
 
-A stream is audio from another computer. dsper treats it as it treats any app's audio: it arrives in one of
-dsper's inputs, and the receiving machine's checked pipeline — bands, limiter, ceiling, gate — decides what
-reaches its speakers. So an app can send anything, including silence, noise or a full-scale sine, and the
-speakers are protected exactly as they are from a local app.
+A stream is audio from another computer. saqa plays it only into an input the receiving machine allows, never
+into an interface. With dsper, that is one of dsper's inputs, treated as any app's audio: the receiving machine's
+checked pipeline — bands, limiter, ceiling, gate — decides what reaches its speakers. So an app can send anything,
+including silence, noise or a full-scale sine, and the speakers are protected exactly as they are from a local
+app. The protection after the input is the host's (dsper's); saqa's part is that nothing else is played into.

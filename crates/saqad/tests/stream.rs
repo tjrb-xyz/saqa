@@ -33,14 +33,23 @@ fn agent() -> ureq::Agent {
         .new_agent()
 }
 
-fn start(args: &[&str], health: &str) -> Daemon {
+fn temp_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("saqad-{}-{}", std::process::id(), free_port()));
     std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn start(args: &[&str], health: &str) -> Daemon {
+    start_in(&temp_dir(), args, health)
+}
+
+/// saqad with `XDG_CONFIG_HOME` at `dir`: its own files are in `dir/saqa`.
+fn start_in(dir: &std::path::Path, args: &[&str], health: &str) -> Daemon {
     let port = free_port();
     let child = Command::new(env!("CARGO_BIN_EXE_saqad"))
         .args(args)
         .args(["--port", &port.to_string(), "--token", TOKEN])
-        .env("XDG_CONFIG_HOME", &dir)
+        .env("XDG_CONFIG_HOME", dir)
         .stdout(Stdio::null())
         .spawn()
         .unwrap();
@@ -73,7 +82,10 @@ fn call(port: u16, method: &str, path: &str, body: Option<Value>) -> (u16, Value
 
 #[test]
 fn saqad_serves_streams_and_holds_the_safety_line() {
-    let d = start(&["--memory"], "/stream/v1/health");
+    let d = start(
+        &["--memory", "--sink", "dsper stream 16ch"],
+        "/stream/v1/health",
+    );
     let (status, _) = agent()
         .get(format!("http://127.0.0.1:{}/stream/v1/state", d.1))
         .call()
@@ -144,4 +156,88 @@ fn a_foreign_host_or_origin_is_refused() {
     assert_eq!(status(&format!("evil.example:{}", d.1), None), 421);
     assert_eq!(status(&here, Some("https://evil.example")), 403);
     assert_eq!(status(&here, Some(&format!("http://{here}"))), 200);
+}
+
+#[test]
+fn without_sinks_nothing_is_received() {
+    let d = start(&["--memory"], "/stream/v1/health");
+    let (status, v) = call(
+        d.1,
+        "PUT",
+        "/stream/v1/links/from-studio",
+        Some(
+            json!({"direction": "receive", "device": "dsper stream 16ch", "channels": [0, 1], "port": 20000}),
+        ),
+    );
+    assert_eq!(status, 422, "{v}");
+    assert!(
+        v["error"].as_str().unwrap().contains("none is configured"),
+        "{v}"
+    );
+}
+
+#[test]
+fn sinks_and_aliases_come_from_the_config_file() {
+    let dir = temp_dir();
+    std::fs::create_dir_all(dir.join("saqa")).unwrap();
+    std::fs::write(
+        dir.join("saqa/saqad.json"),
+        r#"{"sinks": ["dsper * 16ch"], "aliases": {"stream": "dsper stream 16ch"}}"#,
+    )
+    .unwrap();
+    let d = start_in(&dir, &["--memory"], "/stream/v1/health");
+    let (status, state) = call(d.1, "GET", "/stream/v1/state", None);
+    assert_eq!(status, 200);
+    let (status, v) = call(
+        d.1,
+        "PUT",
+        "/stream/v1/links/from-studio",
+        Some(
+            json!({"direction": "receive", "device": "stream", "channels": [0, 1],
+                    "port": free_port().clamp(1024, 60000)}),
+        ),
+    );
+    if state["available"] == true {
+        assert_eq!(status, 200, "{v}");
+        assert_eq!(v["device"], "dsper stream 16ch", "the alias, resolved: {v}");
+    } else {
+        assert_eq!(status, 503, "{v}");
+    }
+    let (status, v) = call(
+        d.1,
+        "PUT",
+        "/stream/v1/links/x",
+        Some(
+            json!({"direction": "receive", "device": "dsper system 2ch", "channels": [0], "port": 20000}),
+        ),
+    );
+    assert_eq!(status, 422, "{v}");
+}
+
+#[test]
+fn dspers_kept_links_are_imported_once() {
+    let dir = temp_dir();
+    let old = dir.join("dsper/streams.json");
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    let kept = r#"{"corner": {"direction": "send", "device": "nowhere 2ch", "channels": [0, 1], "to": "corner.local:20000"}}"#;
+    std::fs::write(&old, kept).unwrap();
+    let ours = dir.join("saqa/streams.json");
+    {
+        let _d = start_in(
+            &dir,
+            &["--import-links", old.to_str().unwrap()],
+            "/stream/v1/health",
+        );
+        let text = std::fs::read_to_string(&ours).unwrap();
+        assert!(text.contains("corner.local:20000"), "{text}");
+    }
+    // Once saqa keeps its own, dsper's file is not read again.
+    std::fs::write(&ours, "{}").unwrap();
+    let _d = start_in(
+        &dir,
+        &["--import-links", old.to_str().unwrap()],
+        "/stream/v1/health",
+    );
+    assert_eq!(std::fs::read_to_string(&ours).unwrap().trim(), "{}");
+    assert!(old.exists(), "dsper's file is left where it was");
 }

@@ -6,18 +6,21 @@
 //!   16ch` 5–6, an interface's inputs where a drum machine is plugged in)
 //!   and streams them to another machine;
 //! - a *receive* link listens on a port and plays what arrives into chosen
-//!   channels of one of dsper's own inputs here — normally `dsper stream
-//!   16ch` — where the local mix, patches and safety check take over.
+//!   channels of an input this machine allows (its [`Devices`] sinks: with
+//!   dsper, one of dsper's own inputs, normally `dsper stream 16ch`), where
+//!   the local mix, patches and safety check take over.
 //!
-//! That last rule is the safety line, the same one the engine holds: audio
-//! from the network never reaches an interface directly. It lands in a dsper
-//! input, and only this machine's checked pipeline decides what the speakers
-//! get. A receive link into anything else is refused.
+//! That last rule is the safety line: audio from the network never reaches
+//! an interface directly. It lands in an allowed input, and only this
+//! machine's checked pipeline decides what the speakers get. A receive link
+//! into anything else is refused, and with no sinks configured every receive
+//! link is.
 //!
 //! The service keeps its links in a file and restarts them with saqad. Its
 //! REST API is at `/stream/v1` (see [`rest`]).
 
 pub mod audio;
+pub mod devices;
 mod pump;
 pub mod rest;
 pub mod service;
@@ -28,6 +31,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub use audio::{Audio, CpalAudio};
+pub use devices::{Alias, Devices};
 
 /// One link, as it is asked for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,7 +43,7 @@ pub enum LinkSpec {
         channels: Vec<u32>,
         to: String,
     },
-    /// Listen on `port` and play the stream into `channels` of `device`, a dsper input.
+    /// Listen on `port` and play the stream into `channels` of `device`, an allowed input.
     Receive {
         device: String,
         channels: Vec<u32>,
@@ -64,45 +68,6 @@ impl LinkSpec {
         match self {
             LinkSpec::Send { channels, .. } | LinkSpec::Receive { channels, .. } => channels,
         }
-    }
-}
-
-/// One of dsper's inputs: `dsper system 2ch`, `dsper daw 16ch`, `dsper
-/// stream 16ch` (macOS), or their snd-aloop cards (`hw:CARD=dsperstream,DEV=0`,
-/// the side apps play into). Only these may receive a stream.
-pub fn is_dsper_input(device: &str) -> bool {
-    let role = |rest: &str| ["system", "daw", "stream"].contains(&rest);
-    if let Some(card) = device
-        .strip_prefix("hw:CARD=dsper")
-        .or_else(|| device.strip_prefix("plughw:CARD=dsper"))
-    {
-        return card.strip_suffix(",DEV=0").is_some_and(role);
-    }
-    device
-        .strip_prefix("dsper ")
-        .and_then(|r| r.rsplit_once(' '))
-        .is_some_and(|(r, ch)| {
-            role(r)
-                && ch
-                    .strip_suffix("ch")
-                    .is_some_and(|n| n.parse::<u32>().is_ok())
-        })
-}
-
-/// `system`, `daw` or `stream` → that dsper input's device here: `dsper daw
-/// 16ch` on macOS; on Linux its snd-aloop card, the side apps play into
-/// (device 0) for a receive link, the side dsper captures (device 1) for a
-/// send link. Anything else is a device name already.
-pub fn resolve(device: &str, receive: bool) -> String {
-    let ch = match device {
-        "system" => 2,
-        "daw" | "stream" => 16,
-        _ => return device.to_string(),
-    };
-    if cfg!(target_os = "linux") {
-        format!("hw:CARD=dsper{device},DEV={}", if receive { 0 } else { 1 })
-    } else {
-        format!("dsper {device} {ch}ch")
     }
 }
 
@@ -136,23 +101,38 @@ fn check_port(port: u16) -> Result<(), String> {
 }
 
 /// Why a link cannot be what it asks, before anything is opened.
-pub fn check(spec: &LinkSpec, others: &BTreeMap<String, LinkSpec>) -> Result<(), String> {
+pub fn check(
+    spec: &LinkSpec,
+    others: &BTreeMap<String, LinkSpec>,
+    devices: &Devices,
+) -> Result<(), String> {
+    check_link(spec, others, devices).map_err(|r| match r {
+        Refused::Invalid(m) | Refused::NotAnInput(m) | Refused::Unavailable(m) => m,
+    })
+}
+
+fn check_link(
+    spec: &LinkSpec,
+    others: &BTreeMap<String, LinkSpec>,
+    devices: &Devices,
+) -> Result<(), Refused> {
+    let invalid = Refused::Invalid;
     let ch = spec.channels();
     if ch.is_empty() || ch.len() > saqa_roc::MAX_CHANNELS as usize {
-        return Err(format!(
+        return Err(invalid(format!(
             "a link carries 1–{} channels",
             saqa_roc::MAX_CHANNELS
-        ));
+        )));
     }
     let mut seen = ch.to_vec();
     seen.sort();
     seen.dedup();
     if seen.len() != ch.len() {
-        return Err("each channel once".into());
+        return Err(invalid("each channel once".into()));
     }
     match spec {
         LinkSpec::Send { to, .. } => {
-            parse_peer(to)?;
+            parse_peer(to).map_err(invalid)?;
         }
         LinkSpec::Receive {
             device,
@@ -160,21 +140,29 @@ pub fn check(spec: &LinkSpec, others: &BTreeMap<String, LinkSpec>) -> Result<(),
             latency_ms,
             ..
         } => {
-            if !is_dsper_input(device) {
-                return Err(format!(
-                    "a stream plays only into one of dsper's inputs (dsper stream 16ch, …), \
+            if !devices.allows(device) {
+                let allowed = if devices.sinks.is_empty() {
+                    "none is configured here".to_string()
+                } else {
+                    devices.sinks.join(", ")
+                };
+                return Err(Refused::NotAnInput(format!(
+                    "a stream plays only into an input this machine allows ({allowed}), \
                      never straight into '{device}': this machine's checked pipeline decides \
                      what reaches speakers"
-                ));
+                )));
             }
-            check_port(*port)?;
+            check_port(*port).map_err(invalid)?;
             if !(10..=2000).contains(latency_ms) {
-                return Err("latency: 10–2000 ms".into());
+                return Err(invalid("latency: 10–2000 ms".into()));
             }
             for (id, o) in others {
                 if let LinkSpec::Receive { port: p, .. } = o {
                     if p.abs_diff(*port) < 3 {
-                        return Err(format!("ports {port}–{} overlap link '{id}'", port + 2));
+                        return Err(invalid(format!(
+                            "ports {port}–{} overlap link '{id}'",
+                            port + 2
+                        )));
                     }
                 }
             }
@@ -208,6 +196,7 @@ struct Running {
 /// The links, their pumps, and where they are kept.
 pub struct StreamService {
     audio: Arc<dyn Audio>,
+    devices: Devices,
     file: Option<PathBuf>,
     links: Mutex<BTreeMap<String, (LinkSpec, Running)>>,
 }
@@ -221,18 +210,25 @@ fn check_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What refused a change: bad input, or no libroc.
+/// What refused a change: bad input, a receive link into an input this
+/// machine does not allow, or no libroc.
 #[derive(Debug, PartialEq)]
 pub enum Refused {
     Invalid(String),
+    NotAnInput(String),
     Unavailable(String),
 }
 
 impl StreamService {
-    /// Starts the links kept in `file` (if any).
-    pub fn start(audio: Arc<dyn Audio>, file: Option<PathBuf>) -> Arc<StreamService> {
+    /// Starts the links kept in `file` (if any), with what `devices` allows.
+    pub fn start(
+        audio: Arc<dyn Audio>,
+        devices: Devices,
+        file: Option<PathBuf>,
+    ) -> Arc<StreamService> {
         let s = Arc::new(StreamService {
             audio,
+            devices,
             file,
             links: Mutex::new(BTreeMap::new()),
         });
@@ -268,8 +264,8 @@ impl StreamService {
     pub fn put(&self, id: &str, mut spec: LinkSpec) -> Result<LinkView, Refused> {
         check_id(id).map_err(Refused::Invalid)?;
         match &mut spec {
-            LinkSpec::Send { device, .. } => *device = resolve(device, false),
-            LinkSpec::Receive { device, .. } => *device = resolve(device, true),
+            LinkSpec::Send { device, .. } => *device = self.devices.resolve(device, false),
+            LinkSpec::Receive { device, .. } => *device = self.devices.resolve(device, true),
         }
         let mut links = self.links.lock().expect("links");
         let others: BTreeMap<String, LinkSpec> = links
@@ -277,7 +273,7 @@ impl StreamService {
             .filter(|(k, _)| k.as_str() != id)
             .map(|(k, (s, _))| (k.clone(), s.clone()))
             .collect();
-        check(&spec, &others).map_err(Refused::Invalid)?;
+        check_link(&spec, &others, &self.devices)?;
         Self::available().map_err(Refused::Unavailable)?;
         if let Some((_, old)) = links.remove(id) {
             old.stop.stop_and_wait();
@@ -350,35 +346,59 @@ mod tests {
         }
     }
 
+    /// What dsper tells saqa on macOS (docs/CONFIG.md).
+    fn dsper() -> Devices {
+        let mut d = Devices {
+            sinks: vec![
+                "dsper system 2ch".into(),
+                "dsper daw 16ch".into(),
+                "dsper stream 16ch".into(),
+            ],
+            ..Default::default()
+        };
+        d.set_alias("stream=dsper stream 16ch", None).unwrap();
+        d
+    }
+
     #[test]
-    fn streams_land_only_in_dsper_inputs() {
-        for ok in [
-            "dsper stream 16ch",
-            "dsper daw 16ch",
-            "dsper system 2ch",
-            "hw:CARD=dsperstream,DEV=0",
-        ] {
-            assert!(is_dsper_input(ok), "{ok}");
-        }
-        for no in [
-            "EVO16",
-            "MacBook Pro Speakers",
-            "dsper in 16ch",
-            "dsper mix · Studio",
-            "dsper 16ch",
-            "hw:CARD=dsperstream,DEV=1",
-            "hw:CARD=EVO16,DEV=0",
-        ] {
-            assert!(!is_dsper_input(no), "{no}");
-        }
-        let e = check(&recv("EVO16", 20000), &BTreeMap::new()).unwrap_err();
+    fn streams_land_only_in_allowed_inputs() {
+        let e = check(&recv("EVO16", 20000), &BTreeMap::new(), &dsper()).unwrap_err();
         assert!(e.contains("never straight into 'EVO16'"), "{e}");
-        assert!(check(&recv("dsper stream 16ch", 20000), &BTreeMap::new()).is_ok());
+        assert!(
+            e.contains("dsper stream 16ch"),
+            "says which are allowed: {e}"
+        );
+        assert!(check(
+            &recv("dsper stream 16ch", 20000),
+            &BTreeMap::new(),
+            &dsper()
+        )
+        .is_ok());
+        let none = Devices::default();
+        let e = check(&recv("dsper stream 16ch", 20000), &BTreeMap::new(), &none).unwrap_err();
+        assert!(e.contains("none is configured"), "{e}");
+        assert_eq!(
+            check_link(&recv("EVO16", 80), &BTreeMap::new(), &dsper()),
+            Err(Refused::NotAnInput(
+                check(&recv("EVO16", 20000), &BTreeMap::new(), &dsper()).unwrap_err()
+            )),
+            "an interface is refused as such, whatever else is wrong"
+        );
+        let mut bad_channels = recv("EVO16", 20000);
+        if let LinkSpec::Receive { channels, .. } = &mut bad_channels {
+            channels.clear();
+        }
+        assert!(matches!(
+            check_link(&bad_channels, &BTreeMap::new(), &dsper()),
+            Err(Refused::Invalid(_))
+        ));
     }
 
     #[test]
     fn links_are_checked_before_anything_opens() {
         let none = BTreeMap::new();
+        let d = dsper();
+        let check = |spec: &LinkSpec, others: &BTreeMap<String, LinkSpec>| check(spec, others, &d);
         let send = |to: &str, ch: Vec<u32>| LinkSpec::Send {
             device: "dsper daw 16ch".into(),
             channels: ch,
@@ -402,23 +422,6 @@ mod tests {
         assert!(check(&recv("dsper stream 16ch", 20003), &taken).is_ok());
         assert_eq!(check_id("vintage-corner"), Ok(()));
         assert!(check_id("a b").is_err());
-    }
-
-    #[test]
-    fn roles_name_this_platforms_devices() {
-        let (r, s) = (resolve("stream", true), resolve("daw", false));
-        if cfg!(target_os = "linux") {
-            assert_eq!(r, "hw:CARD=dsperstream,DEV=0");
-            assert_eq!(s, "hw:CARD=dsperdaw,DEV=1");
-        } else {
-            assert_eq!(
-                (r.as_str(), s.as_str()),
-                ("dsper stream 16ch", "dsper daw 16ch")
-            );
-        }
-        assert!(is_dsper_input(&r));
-        assert!(cfg!(target_os = "linux") || resolve("system", true) == "dsper system 2ch");
-        assert_eq!(resolve("EVO16", true), "EVO16");
     }
 
     #[test]

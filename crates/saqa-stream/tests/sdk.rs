@@ -4,10 +4,23 @@
 //! here); SAQA_REQUIRE_ROC makes its absence a failure.
 
 use saqa_stream::audio::MemoryAudio;
-use saqa_stream::{LinkSpec, StreamService};
+use saqa_stream::{Devices, LinkSpec, StreamService};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// What dsper tells saqa (docs/CONFIG.md): its inputs on macOS, which the
+/// memory devices here stand in for.
+fn dsper() -> Devices {
+    Devices {
+        sinks: vec![
+            "dsper system 2ch".into(),
+            "dsper daw 16ch".into(),
+            "dsper stream 16ch".into(),
+        ],
+        ..Default::default()
+    }
+}
 
 fn app() -> Option<String> {
     let required = std::env::var_os("SAQA_REQUIRE_ROC").is_some();
@@ -45,7 +58,7 @@ fn free_base_port() -> u16 {
 fn an_app_streams_sixteen_channels_into_a_dsper_input() {
     let Some(app) = app() else { return };
     let audio = MemoryAudio::default();
-    let saqa = StreamService::start(Arc::new(audio.clone()), None);
+    let saqa = StreamService::start(Arc::new(audio.clone()), dsper(), None);
     let port = free_base_port();
     saqa.put(
         "from-app",
@@ -102,7 +115,7 @@ fn an_app_receives_a_saqa_send_link() {
         .unwrap();
     // The app listens first; saqa sends while it does.
     let levels: Vec<f32> = (0..16).map(|c| (c + 1) as f32 / 32.0).collect();
-    let saqa = StreamService::start(Arc::new(MemoryAudio::with_levels(levels)), None);
+    let saqa = StreamService::start(Arc::new(MemoryAudio::with_levels(levels)), dsper(), None);
     let started = std::thread::spawn({
         let saqa = saqa.clone();
         move || {
