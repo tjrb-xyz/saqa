@@ -4,7 +4,7 @@
 //! |---|---|---|
 //! | `GET /state` | | `{available, detail, links}`: whether libroc is here, and every link |
 //! | `GET /links` | | `[LinkView]` |
-//! | `PUT /links/{id}` | `LinkSpec` | `LinkView`; 400 invalid, 422 refused (a receive link not into a dsper input), 503 no libroc |
+//! | `PUT /links/{id}` | `LinkSpec` | `LinkView`; 400 invalid (also a channel past a sink's declared width), 422 refused (a receive link not into an allowed input), 503 no libroc |
 //! | `DELETE /links/{id}` | | `null`, 404 when unknown |
 
 use crate::service::{err, health};
@@ -39,9 +39,7 @@ async fn put(State(s): S, Path(id): Path<String>, Json(spec): Json<LinkSpec>) ->
     let r = tokio::task::spawn_blocking(move || s.put(&id, spec)).await;
     match r {
         Ok(Ok(v)) => Json(v).into_response(),
-        Ok(Err(Refused::Invalid(m))) if m.contains("never straight into") => {
-            err(StatusCode::UNPROCESSABLE_ENTITY, m)
-        }
+        Ok(Err(Refused::NotAnInput(m))) => err(StatusCode::UNPROCESSABLE_ENTITY, m),
         Ok(Err(Refused::Invalid(m))) => err(StatusCode::BAD_REQUEST, m),
         Ok(Err(Refused::Unavailable(m))) => err(StatusCode::SERVICE_UNAVAILABLE, m),
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),

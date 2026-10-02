@@ -1,0 +1,103 @@
+name: ci
+# From dsper's `streaming` job and its macos job's libroc step (dsper@7afd988, .github/workflows/ci.yml).
+#
+# Runners: GitHub-hosted. saqa is public, so they cost nothing, and a public repository must not
+# use self-hosted runners: a pull request from any fork would run its code on our machines. (dsper
+# is private and runs on its own machines only; that does not carry over.) docs/CI.md.
+#
+# check      fmt, clippy -D warnings, every test without libroc (the Roc tests say so and pass)
+# linux      libroc built by scripts/roc.sh, saqa/stream.h with g++ and clang++ (-Werror),
+#            every test with SAQA_REQUIRE_ROC=1, the SDK test against both builds
+# macos      the same on macOS (Apple silicon), with clang++
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  # The C++ SDK build, as dsper's CI ran it.
+  SDK_CXXFLAGS: -std=c++17 -O2 -pthread -Wall -Wextra -Wpedantic -Wsign-conversion -Werror
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: ALSA headers (cpal)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests without libroc
+        run: cargo test --workspace
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: ALSA headers (cpal), Roc's build tools, and both C++ compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev scons ragel cmake \
+            autoconf automake libtool pkg-config make g++ clang
+      - uses: Swatinem/rust-cache@v2
+      - name: libroc, kept while scripts/roc.sh (its pin) is unchanged
+        uses: actions/cache@v4
+        with:
+          path: |
+            .saqa/lib
+            .saqa/include
+          key: libroc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/roc.sh') }}
+      - name: scripts/roc.sh builds libroc 0.4 into .saqa/lib
+        run: scripts/roc.sh && ls -l .saqa/lib
+      - name: The SDK's saqa/stream.h, with g++ and clang++ (warnings are errors)
+        run: |
+          for cc in g++ clang++; do
+            $cc $SDK_CXXFLAGS -I sdk/cpp/include -I .saqa/include sdk/cpp/examples/stream_levels.cpp \
+              -L .saqa/lib -lroc -Wl,-rpath,"$PWD/.saqa/lib" -o "$RUNNER_TEMP/stream-$cc"
+          done
+      - name: Roc sessions, links between two machines, saqad, and apps streaming with saqa
+        run: |
+          SAQA_REQUIRE_ROC=1 SAQA_CPP_STREAM="$RUNNER_TEMP/stream-g++" cargo test --workspace
+          SAQA_REQUIRE_ROC=1 SAQA_CPP_STREAM="$RUNNER_TEMP/stream-clang++" cargo test -p saqa-stream --test sdk
+
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Roc's build tools
+        run: for p in scons ragel cmake; do brew list "$p" >/dev/null 2>&1 || brew install "$p"; done
+      - uses: Swatinem/rust-cache@v2
+      - name: libroc, kept while scripts/roc.sh (its pin) is unchanged
+        uses: actions/cache@v4
+        with:
+          path: |
+            .saqa/lib
+            .saqa/include
+          key: libroc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/roc.sh') }}
+      - name: scripts/roc.sh builds libroc 0.4 into .saqa/lib
+        run: scripts/roc.sh && ls -l .saqa/lib
+      - name: libroc is named @rpath/…, so apps load it from .saqa/lib alone (a cached run has no build tree)
+        run: |
+          for f in .saqa/lib/libroc*.dylib; do
+            [[ -L $f ]] && continue
+            id=$(otool -D "$f" | tail -n 1)
+            echo "$f: $id"
+            [[ $id == @rpath/* ]] || { echo "::error::$f is named $id"; exit 1; }
+          done
+      - name: The SDK's saqa/stream.h, with clang++ (warnings are errors)
+        run: |
+          clang++ $SDK_CXXFLAGS -I sdk/cpp/include -I .saqa/include sdk/cpp/examples/stream_levels.cpp \
+            -L .saqa/lib -lroc -Wl,-rpath,"$PWD/.saqa/lib" -o "$RUNNER_TEMP/stream-levels"
+      - name: Roc sessions, links, saqad, and apps streaming with saqa
+        run: SAQA_REQUIRE_ROC=1 SAQA_CPP_STREAM="$RUNNER_TEMP/stream-levels" cargo test --workspace
