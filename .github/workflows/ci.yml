@@ -87,6 +87,14 @@ jobs:
           key: libroc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/roc.sh') }}
       - name: scripts/roc.sh builds libroc 0.4 into .saqa/lib
         run: scripts/roc.sh && ls -l .saqa/lib
+      - name: libroc is named @rpath/…, so apps load it from .saqa/lib alone (a cached run has no build tree)
+        run: |
+          for f in .saqa/lib/libroc*.dylib; do
+            [[ -L $f ]] && continue
+            id=$(otool -D "$f" | tail -n 1)
+            echo "$f: $id"
+            [[ $id == @rpath/* ]] || { echo "::error::$f is named $id"; exit 1; }
+          done
       - name: The SDK's saqa/stream.h, with clang++ (warnings are errors)
         run: |
           clang++ $SDK_CXXFLAGS -I sdk/cpp/include -I .saqa/include sdk/cpp/examples/stream_levels.cpp \
