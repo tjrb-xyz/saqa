@@ -37,9 +37,26 @@ if ((${#missing[@]})); then
   sudo apt install scons ragel cmake autoconf automake libtool pkg-config make (Debian/Ubuntu)"
 fi
 
+# macOS: Roc's build names the dylib by its absolute path in the build tree, so an app linked
+# against .saqa/lib would look there, and fail once that tree is gone (a CI cache, a clean).
+# Name it @rpath/… instead (apps link with -rpath .saqa/lib), then re-sign it: on Apple
+# silicon a changed, unsigned dylib does not load.
+rpath_name() {
+  [[ $(uname -s) == Darwin ]] || return 0
+  local f id
+  for f in "$lib"/libroc*.dylib; do
+    [[ -f $f && ! -L $f ]] || continue
+    id=$(otool -D "$f" | tail -n 1)
+    [[ $id == @rpath/* ]] && continue
+    install_name_tool -id "@rpath/$(basename "$id")" "$f"
+    codesign --force --sign - "$f" >/dev/null 2>&1 || die "could not re-sign $f after naming it"
+  done
+}
+
 # Already built from the pinned commit: nothing to do (SAQA_ROC_REBUILD=1 builds anyway).
 if [[ -z ${SAQA_ROC_REBUILD:-} && $(cat "$lib/roc.commit" 2>/dev/null) == "$ROC_COMMIT" ]] &&
   compgen -G "$lib/libroc.*" >/dev/null && [[ -d $root/.saqa/include/roc ]]; then
+  rpath_name
   say "libroc $ROC_TAG is already built in $lib"
   exit 0
 fi
@@ -85,6 +102,7 @@ for f in "$src"/bin/*/libroc.*; do
   cp -P "$f" "$lib/" && found=1
 done
 ((found)) || { log_tail "$src/saqa-build.log"; die "the build made no libroc (see $src/saqa-build.log)"; }
+rpath_name
 # Its headers too, for apps built with the SDK's saqa/stream.h.
 mkdir -p "$root/.saqa/include"
 cp -R "$src/src/public_api/include/roc" "$root/.saqa/include/"
