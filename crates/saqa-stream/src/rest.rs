@@ -4,7 +4,7 @@
 //! |---|---|---|
 //! | `GET /state` | | `{available, detail, links}`: whether libroc is here, and every link |
 //! | `GET /links` | | `[LinkView]` |
-//! | `PUT /links/{id}` | `LinkSpec` | `LinkView`; 400 invalid, 422 refused (a receive link not into an allowed input), 503 no libroc |
+//! | `PUT /links/{id}` | `LinkSpec` | `LinkView`; 400 invalid (also a channel past a sink's declared width), 422 refused (a receive link not into an allowed input), 503 no libroc |
 //! | `DELETE /links/{id}` | | `null`, 404 when unknown |
 
 use crate::service::{err, health};

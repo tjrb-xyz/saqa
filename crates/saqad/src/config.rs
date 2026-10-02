@@ -2,7 +2,9 @@
 //! `<config dir>/saqad.json` when there is one), then flags over it. Lists
 //! (`--sink`, `--allow-origin`, `--allow-host`) add to the file's; an alias
 //! flag replaces that alias (or one direction of it); anything else a flag
-//! gives wins. docs/CONFIG.md describes every key.
+//! gives wins. The devices (sinks, widths, aliases) are checked after the
+//! flags, so a flag cannot slip past the file's rules. docs/CONFIG.md
+//! describes every key.
 
 use saqa_stream::devices::Direction;
 use saqa_stream::{Alias, Devices};
@@ -13,11 +15,11 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_PORT: u16 = 8486;
 
 pub const USAGE: &str = "usage: saqad [--config FILE] [--port N] [--token-file FILE | --token T]
-             [--sink DEVICE]... [--alias NAME=DEVICE]...
+             [--sink DEVICE]... [--sink-width DEVICE=N]... [--alias NAME=DEVICE]...
              [--alias-send NAME=DEVICE]... [--alias-receive NAME=DEVICE]...
              [--links FILE] [--import-links FILE]
              [--allow-origin URL]... [--allow-host NAME]... [--memory]
-(docs/CONFIG.md)";
+SIGHUP reloads sinks, widths and aliases from the config file (docs/CONFIG.md)";
 
 /// The file's keys; every one is optional.
 #[derive(Debug, Default, Deserialize)]
@@ -27,6 +29,8 @@ struct File {
     token_file: Option<PathBuf>,
     #[serde(default)]
     sinks: Vec<String>,
+    #[serde(default)]
+    sink_widths: BTreeMap<String, u16>,
     #[serde(default)]
     aliases: BTreeMap<String, Alias>,
     links: Option<PathBuf>,
@@ -92,8 +96,8 @@ impl Config {
         let devices = Devices {
             sinks: file.sinks,
             aliases: file.aliases,
+            widths: file.sink_widths,
         };
-        devices.check()?;
         let mut c = Config {
             port: file.port.unwrap_or(DEFAULT_PORT),
             token: Token::File(file.token_file.unwrap_or_else(|| dir.join("token"))),
@@ -122,6 +126,7 @@ impl Config {
                 "--token" => c.token = Token::Given(value()?),
                 "--token-file" => c.token = Token::File(value()?.into()),
                 "--sink" => c.devices.sinks.push(value()?),
+                "--sink-width" => c.devices.set_width(&value()?)?,
                 "--alias" => c.devices.set_alias(&value()?, None)?,
                 "--alias-send" => c.devices.set_alias(&value()?, Some(Direction::Send))?,
                 "--alias-receive" => c.devices.set_alias(&value()?, Some(Direction::Receive))?,
@@ -133,6 +138,7 @@ impl Config {
                 other => return Err(format!("unknown option '{other}'")),
             }
         }
+        c.devices.check()?;
         for h in &mut c.allow_hosts {
             *h = h.to_lowercase();
         }
@@ -216,6 +222,87 @@ mod tests {
         assert!(Config::parse(&args(&["--port"]), dir.path()).is_err());
         assert!(Config::parse(&args(&["--sideways"]), dir.path()).is_err());
         assert!(Config::parse(&args(&["--alias", "stream"]), dir.path()).is_err());
+    }
+
+    /// docs/CONFIG.md's Linux setup: a stream plays into each loopback's
+    /// DEV=0 side and is read from its DEV=1 side, never the other way.
+    #[test]
+    fn the_recommended_linux_setup_splits_system() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Config::parse(
+            &args(&[
+                "--sink",
+                "hw:CARD=dsperstream,DEV=0",
+                "--sink",
+                "plughw:CARD=dsperstream,DEV=0",
+                "--sink",
+                "hw:CARD=dspersystem,DEV=0",
+                "--sink",
+                "plughw:CARD=dspersystem,DEV=0",
+                "--sink-width",
+                "hw:CARD=dsperstream,DEV=0=16",
+                "--sink-width",
+                "plughw:CARD=dsperstream,DEV=0=16",
+                "--sink-width",
+                "hw:CARD=dspersystem,DEV=0=2",
+                "--sink-width",
+                "plughw:CARD=dspersystem,DEV=0=2",
+                "--alias-receive",
+                "stream=hw:CARD=dsperstream,DEV=0",
+                "--alias-send",
+                "stream=hw:CARD=dsperstream,DEV=1",
+                "--alias-receive",
+                "system=hw:CARD=dspersystem,DEV=0",
+                "--alias-send",
+                "system=hw:CARD=dspersystem,DEV=1",
+                "--alias",
+                "daw=hw:CARD=dsperdaw,DEV=1",
+            ]),
+            dir.path(),
+        )
+        .unwrap();
+        let d = &c.devices;
+        assert_eq!(d.resolve("system", true), "hw:CARD=dspersystem,DEV=0");
+        assert_eq!(d.resolve("system", false), "hw:CARD=dspersystem,DEV=1");
+        assert!(d.allows("hw:CARD=dspersystem,DEV=0"));
+        assert!(!d.allows("hw:CARD=dspersystem,DEV=1"));
+        assert_eq!(d.width("hw:CARD=dspersystem,DEV=0"), Some(2));
+        assert_eq!(d.width("plughw:CARD=dspersystem,DEV=0"), Some(2));
+        assert_eq!(d.width("hw:CARD=dsperstream,DEV=0"), Some(16));
+        assert!(d.stereo_ready());
+        assert_eq!(d.resolve("daw", true), "hw:CARD=dsperdaw,DEV=1");
+        assert!(
+            !d.allows(&d.resolve("daw", true)),
+            "daw is read, not played into"
+        );
+    }
+
+    #[test]
+    fn sink_widths_come_from_the_file_and_flags() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("saqad.json"),
+            r#"{"sinks": ["dsper system 2ch"], "sink_widths": {"dsper system 2ch": 1}}"#,
+        )
+        .unwrap();
+        let c = Config::parse(&[], dir.path()).unwrap();
+        assert_eq!(c.devices.width("dsper system 2ch"), Some(1));
+        let c = Config::parse(&args(&["--sink-width", "dsper system 2ch=2"]), dir.path()).unwrap();
+        assert_eq!(c.devices.width("dsper system 2ch"), Some(2), "a flag wins");
+        assert!(
+            Config::parse(&args(&["--sink-width", "EVO16=16"]), dir.path())
+                .unwrap_err()
+                .contains("no sink allows it")
+        );
+        assert!(
+            Config::parse(&args(&["--sink", "*"]), dir.path()).is_err(),
+            "flags are checked too"
+        );
+        std::fs::write(dir.path().join("saqad.json"), r#"{"sink_width": {"x": 2}}"#).unwrap();
+        assert!(
+            Config::parse(&[], dir.path()).is_err(),
+            "a typo is an error"
+        );
     }
 
     #[test]

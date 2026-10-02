@@ -242,34 +242,62 @@ fn dspers_kept_links_are_imported_once() {
     assert!(old.exists(), "dsper's file is left where it was");
 }
 
-/// docs/CONFIG.md's setup: a received stream lands only in the engine's
-/// streaming loopback; a send link may read any loopback.
+/// docs/CONFIG.md's macOS setup: a received stream lands in the streaming
+/// loopback or the 2-channel one; a send link may read any loopback.
+const RECOMMENDED: &[&str] = &[
+    "--memory",
+    "--sink",
+    "dsper stream 16ch",
+    "--sink",
+    "dsper system 2ch",
+    "--sink-width",
+    "dsper stream 16ch=16",
+    "--sink-width",
+    "dsper system 2ch=2",
+    "--alias",
+    "stream=dsper stream 16ch",
+    "--alias",
+    "system=dsper system 2ch",
+    "--alias",
+    "daw=dsper daw 16ch",
+];
+
 #[test]
-fn the_recommended_setup_receives_only_into_the_streaming_loopback() {
-    let d = start(
-        &[
-            "--memory",
-            "--sink",
-            "dsper stream 16ch",
-            "--alias",
-            "stream=dsper stream 16ch",
-            "--alias",
-            "system=dsper system 2ch",
-            "--alias",
-            "daw=dsper daw 16ch",
-        ],
-        "/stream/v1/health",
-    );
+fn the_recommended_setup_receives_into_the_streaming_and_the_stereo_loopback() {
+    let d = start(RECOMMENDED, "/stream/v1/health");
     let (_, state) = call(d.1, "GET", "/stream/v1/state", None);
     let ok = if state["available"] == true { 200 } else { 503 };
-    let receive = |device: &str| {
-        json!({"direction": "receive", "device": device, "channels": [0, 1],
+    let receive = |device: &str, channels: Value| {
+        json!({"direction": "receive", "device": device, "channels": channels,
                "port": free_port().clamp(1024, 60000)})
     };
-    let (status, v) = call(d.1, "PUT", "/stream/v1/links/in", Some(receive("stream")));
-    assert_eq!(status, ok, "{v}");
-    for into in ["system", "daw", "dsper system 2ch"] {
-        let (status, v) = call(d.1, "PUT", "/stream/v1/links/x", Some(receive(into)));
+    for (id, into) in [("in", "stream"), ("stereo", "system")] {
+        let (status, v) = call(
+            d.1,
+            "PUT",
+            &format!("/stream/v1/links/{id}"),
+            Some(receive(into, json!([0, 1]))),
+        );
+        assert_eq!(status, ok, "{into}: {v}");
+    }
+    let (status, v) = call(
+        d.1,
+        "PUT",
+        "/stream/v1/links/x",
+        Some(receive("system", json!([0, 2]))),
+    );
+    assert_eq!(status, 400, "{v}");
+    assert!(v["error"]
+        .as_str()
+        .unwrap()
+        .contains("no channel 3 (2 channels)"));
+    for into in ["daw", "dsper daw 16ch", "EVO16"] {
+        let (status, v) = call(
+            d.1,
+            "PUT",
+            "/stream/v1/links/x",
+            Some(receive(into, json!([0, 1]))),
+        );
         assert_eq!(status, 422, "{into}: {v}");
     }
     let (status, v) = call(
@@ -284,4 +312,100 @@ fn the_recommended_setup_receives_only_into_the_streaming_loopback() {
     if ok == 200 {
         assert_eq!(v["device"], "dsper daw 16ch", "{v}");
     }
+}
+
+/// saqad with its stderr in a file, and what it said once it was up.
+fn said(args: &[&str]) -> String {
+    let dir = temp_dir();
+    let log = dir.join("stderr");
+    let port = free_port();
+    let child = Command::new(env!("CARGO_BIN_EXE_saqad"))
+        .args(args)
+        .args(["--port", &port.to_string(), "--token", TOKEN])
+        .env("XDG_CONFIG_HOME", &dir)
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let _d = Daemon(child, port);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while agent()
+        .get(format!("http://127.0.0.1:{port}/stream/v1/health"))
+        .call()
+        .map_or(true, |r| r.status() != 200)
+    {
+        assert!(Instant::now() < deadline, "saqad did not come up");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::fs::read_to_string(&log).unwrap()
+}
+
+#[test]
+fn saqad_says_where_a_stereo_stream_can_land() {
+    let text = said(RECOMMENDED);
+    assert!(
+        text.contains("receives into: dsper stream 16ch (16ch), dsper system 2ch (2ch)"),
+        "{text}"
+    );
+    assert!(!text.contains("no sink is declared 2"), "{text}");
+    let text = said(&["--memory", "--sink", "dsper stream 16ch"]);
+    assert!(
+        text.contains("no sink is declared 2 or more channels wide"),
+        "{text}"
+    );
+}
+
+/// A loopback made later, for a room or a creative use, is receivable after
+/// a reload, with no restart; a bad configuration changes nothing.
+#[cfg(unix)]
+#[test]
+fn a_reload_changes_what_may_be_received() {
+    let dir = temp_dir();
+    let file = dir.join("saqad.json");
+    std::fs::write(&file, r#"{"sinks": ["dsper stream 16ch"]}"#).unwrap();
+    let d = start_in(
+        &dir,
+        &["--memory", "--config", file.to_str().unwrap()],
+        "/stream/v1/health",
+    );
+    let pid = d.0.id().to_string();
+    let hup = || {
+        assert!(Command::new("kill")
+            .args(["-HUP", &pid])
+            .status()
+            .unwrap()
+            .success());
+    };
+    let booth = |port: u16| json!({"direction": "receive", "device": "ae rx booth 2ch", "channels": [0, 1], "port": port});
+    let (status, v) = call(d.1, "PUT", "/stream/v1/links/booth", Some(booth(20000)));
+    assert_eq!(status, 422, "not a sink yet: {v}");
+
+    std::fs::write(&file, r#"{"sinks": ["dsper stream 16ch", "ae rx *"]}"#).unwrap();
+    hup();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let (status, _) = call(d.1, "PUT", "/stream/v1/links/booth", Some(booth(20000)));
+        if status != 422 || Instant::now() > deadline {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(
+        status == 200 || status == 503,
+        "the new loopback is receivable: {status}"
+    );
+
+    std::fs::write(&file, "{ not json").unwrap();
+    hup();
+    std::thread::sleep(Duration::from_millis(500));
+    let (status, v) = call(d.1, "PUT", "/stream/v1/links/booth", Some(booth(20010)));
+    assert!(
+        status == 200 || status == 503,
+        "a bad file keeps what was allowed: {status} {v}"
+    );
+    assert_eq!(
+        d.0.id().to_string(),
+        pid,
+        "still the same saqad, never restarted"
+    );
 }

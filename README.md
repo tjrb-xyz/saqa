@@ -3,7 +3,8 @@
 saqa carries audio between machines: one-way **links** of up to 16 channels over
 [Roc](https://github.com/roc-streaming/roc-toolkit), with forward error correction and clock-drift correction. A
 send link captures channels of a device here and streams them to another machine; a receive link plays what
-arrives into audio-engine's streaming loopback, never straight into an interface. `saqad` serves its REST API at
+arrives into one of audio-engine's loopbacks, never straight into an interface: the streaming loopback, a
+2-channel loopback for stereo, and any made later for rooms and creative uses. `saqad` serves its REST API at
 `/stream/v1`.
 
 saqa is built from [audio-engine](https://github.com/tjrb-xyz/audio-engine) and other libraries, Roc today. It
@@ -11,8 +12,8 @@ started as dsper's streaming (github.com/tjrb-xyz/dsper, imported at dsper@7afd9
 
 **Who does what.** audio-engine carries the audio and owns the virtual devices (loopbacks). dsper does DSP and
 routes audio between devices for the situation; it may summon virtual devices from the engine, which run
-separately but belong to the engine. saqa reads from and plays into the engine's streaming loopback, and carries
-that audio between machines. dsper calls saqa's API for anything about streams.
+separately but belong to the engine. saqa reads from and plays into the engine's loopbacks it is told are receivable,
+and carries that audio between machines. dsper calls saqa's API for anything about streams.
 [docs/AUDIO-ENGINE.md](docs/AUDIO-ENGINE.md).
 
 MIT ([LICENSE](LICENSE)). libroc (MPL-2.0) is loaded at run time, never linked.
@@ -22,7 +23,9 @@ MIT ([LICENSE](LICENSE)). libroc (MPL-2.0) is loaded at run time, never linked.
 ```sh
 scripts/roc.sh                    # libroc 0.4 into .saqa/lib (SCons, ragel, CMake; on Linux autotools too)
 cargo build --release
-target/release/saqad --sink 'dsper stream 16ch' --alias 'stream=dsper stream 16ch'
+target/release/saqad --sink 'dsper stream 16ch' --sink 'dsper system 2ch' \
+  --sink-width 'dsper stream 16ch=16' --sink-width 'dsper system 2ch=2' \
+  --alias 'stream=dsper stream 16ch' --alias 'system=dsper system 2ch'
 curl -H "Authorization: Bearer $(cat ~/.config/saqa/token)" http://127.0.0.1:8486/stream/v1/state
 ```
 
@@ -36,16 +39,19 @@ in [docs/CONFIG.md](docs/CONFIG.md); this is the summary to wire against.
 | Address | `http://127.0.0.1:8486/stream/v1` (`--port N`); loopback only, plain HTTP |
 | Token | `~/.config/saqa/token` (`$XDG_CONFIG_HOME/saqa/token`), mode 0600, made on first start; or `--token-file FILE` of dsper's choosing (filled if empty). Send `Authorization: Bearer <token>`; `/stream/v1/health` is open |
 | Forwarding | `Host: 127.0.0.1:8486`, no `Origin` (or `--allow-origin`), saqa's token in place of dsper's |
-| Sinks | `--sink DEVICE`: the streaming loopback's device (exact, `*` wildcard). **None given: every receive link is 422** |
+| Sinks | `--sink DEVICE` per loopback a receive link may play into (exact, or one `*` pattern), any number; `--sink-width DEVICE=N` declares its channels (a channel past it is 400). **None given: every receive link is 422** |
 | Roles | `--alias NAME=DEVICE`, or `--alias-send` / `--alias-receive` for a device per direction |
 | Links | kept in `~/.config/saqa/streams.json` (`--links FILE`); `--import-links ~/.config/dsper/streams.json` copies dsper's once, while saqa has none |
-| A file instead | `--config FILE`: the same as JSON (`port`, `token_file`, `sinks`, `aliases`, `links`, `import_links`, `allow_origins`, `allow_hosts`) |
+| A file instead | `--config FILE`: the same as JSON (`port`, `token_file`, `sinks`, `sink_widths`, `aliases`, `links`, `import_links`, `allow_origins`, `allow_hosts`) |
+| New loopbacks | add them to the config file and send saqad `SIGHUP`: no restart. Links re-check; a link into a loopback that is gone waits, and starts again when it is back |
 
-A received stream lands only in the streaming loopback; a send link may read it, or the `system` and `daw`
-loopbacks. The loopbacks show under dsper's names today. macOS:
+A received stream lands in the streaming loopback (16 channels) or the 2-channel loopback, so stereo always has a
+stereo device; a send link may read either, or the `daw` loopback. The loopbacks show under dsper's names today.
+macOS:
 
 ```sh
-saqad --sink 'dsper stream 16ch' \
+saqad --sink 'dsper stream 16ch' --sink 'dsper system 2ch' \
+  --sink-width 'dsper stream 16ch=16' --sink-width 'dsper system 2ch=2' \
   --alias 'stream=dsper stream 16ch' --alias 'system=dsper system 2ch' --alias 'daw=dsper daw 16ch' \
   --import-links ~/.config/dsper/streams.json
 ```
@@ -54,18 +60,25 @@ Linux (play into `DEV=0`, read from `DEV=1`):
 
 ```sh
 saqad --sink 'hw:CARD=dsperstream,DEV=0' --sink 'plughw:CARD=dsperstream,DEV=0' \
+  --sink 'hw:CARD=dspersystem,DEV=0' --sink 'plughw:CARD=dspersystem,DEV=0' \
+  --sink-width 'hw:CARD=dsperstream,DEV=0=16' --sink-width 'plughw:CARD=dsperstream,DEV=0=16' \
+  --sink-width 'hw:CARD=dspersystem,DEV=0=2' --sink-width 'plughw:CARD=dspersystem,DEV=0=2' \
   --alias-receive 'stream=hw:CARD=dsperstream,DEV=0' --alias-send 'stream=hw:CARD=dsperstream,DEV=1' \
-  --alias 'system=hw:CARD=dspersystem,DEV=1' --alias 'daw=hw:CARD=dsperdaw,DEV=1' \
+  --alias-receive 'system=hw:CARD=dspersystem,DEV=0' --alias-send 'system=hw:CARD=dspersystem,DEV=1' \
+  --alias 'daw=hw:CARD=dsperdaw,DEV=1' \
   --import-links ~/.config/dsper/streams.json
 ```
 
-dsper also let a stream be received into `system` and `daw`; with this setup that is 422. docs/CONFIG.md shows the
-flags that keep dsper's old behaviour exactly.
+A receive into `daw` is 422 unless it is added as a sink (dsper allowed it; docs/CONFIG.md has the flags). On
+Linux each loopback's `DEV=0` takes one player (`pcm_substreams=1`), so where the desktop holds `dspersystem`,
+a stereo link there fails and says the device is busy.
 
 **The contract** is dsper's, unchanged: `GET /state` → `{available, detail, links}`, `GET /links`,
-`PUT /links/{id}` with a `LinkSpec` (400 invalid, 422 a receive link not into an allowed input, 503 no libroc),
-`DELETE /links/{id}` (404 unknown), `GET /health`. Only the 422 and 503 texts changed (they named dsper), and
-`system`/`daw`/`stream` mean what saqad is told. [docs/API.md](docs/API.md) lists every difference.
+`PUT /links/{id}` with a `LinkSpec` (400 invalid, 422 a receive link not into an allowed loopback, 503 no libroc),
+`DELETE /links/{id}` (404 unknown), `GET /health`. What differs: the 422 and 503 texts (they named dsper);
+`system`/`daw`/`stream` mean what saqad is told; a channel past a sink's declared width is 400; a kept link that
+cannot run waits (`failed`, `waiting: …`) instead of vanishing; and a link whose loopback goes away fails.
+[docs/API.md](docs/API.md) lists every difference.
 
 ## What is here
 

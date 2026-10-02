@@ -9,14 +9,15 @@ A **link** goes one way:
 
 - a **send** link captures chosen channels of a device on this machine (a role such as `daw`, or an
   interface's inputs where an instrument is plugged in) and streams them to `host:port`;
-- a **receive** link listens on a port and plays what arrives into chosen channels of audio-engine's
-  **streaming loopback**, a virtual device the engine owns (with dsper today it shows as **dsper stream 16ch**).
-  dsper routes it from there, through its DSP, to speakers.
+- a **receive** link listens on a port and plays what arrives into chosen channels of one of audio-engine's
+  loopbacks, virtual devices the engine owns: the **streaming loopback** (16 channels; with dsper today
+  **dsper stream 16ch**), a **2-channel loopback** for stereo (with dsper today **dsper system 2ch**), or any
+  loopback made later for a room or a creative use. dsper routes it from there, through its DSP, to speakers.
 
 audio-engine carries the audio and owns the virtual devices; dsper does DSP and routing, and may summon those
 devices from the engine; saqa carries audio between machines (docs/AUDIO-ENGINE.md, "Who does what").
 
-**A stream never plays straight into an interface.** It lands only in an input saqad was told it may play into
+**A stream never plays straight into an interface.** It lands only in a loopback saqad was told it may play into
 (its *sinks*, docs/CONFIG.md), and from there the receiving machine's own pipeline decides what reaches its
 speakers. With dsper, its mix, patches and safety check apply to streamed audio exactly as to local audio. A
 receive link into anything else is refused (422); with no sinks configured, every receive link is.
@@ -29,11 +30,13 @@ speakers after the sink is the host's (dsper protects what enters its inputs).
 ```sh
 scripts/roc.sh      # libroc 0.4 into .saqa/lib (needs SCons, ragel, CMake; on Linux autotools)
 cargo build --release
-target/release/saqad --sink 'dsper stream 16ch' --alias 'stream=dsper stream 16ch'
+target/release/saqad --sink 'dsper stream 16ch' --sink 'dsper system 2ch' \
+  --sink-width 'dsper stream 16ch=16' --sink-width 'dsper system 2ch=2' \
+  --alias 'stream=dsper stream 16ch' --alias 'system=dsper system 2ch'
 ```
 
 saqad serves `/stream/v1` on `127.0.0.1:8486` (docs/API.md). With dsper, dsperd runs or reaches saqad, names the
-streaming loopback and the role words (docs/CONFIG.md, "Pointing saqad at the streaming loopback"), and serves
+loopbacks and the role words (docs/CONFIG.md, "Pointing saqad at the loopbacks"), and serves
 the same API to dsper's web UI and MCP tools; whether streaming is on is dsper's setting.
 
 saqad finds libroc at `SAQA_LIBROC`, then in the checkout's `.saqa/lib`, then in Homebrew's lib directories
@@ -53,7 +56,14 @@ own interface or amp, and protects them where they are.
 2. **Main machine:** send `corner` from `daw`, channels `5–6`, to `corner.local:20000`. Whatever the DAW plays on
    its outputs 5–6 now plays in the corner.
 
-To send what the whole Mac plays instead, send `system 1–2`.
+To send what the whole Mac plays instead, send `system 1–2`. A stereo stream can also be received into the
+2-channel loopback, `system 1–2`, where it plays like the corner machine's own sound.
+
+## More loopbacks
+
+audio-engine can make more loopbacks over time (dsper may ask it to): one per room, a booth monitor, a DAW's
+return, an installation. Each becomes a place a stream can land once saqad is told it is a sink, and a reload
+(SIGHUP) is enough: no restart (docs/CONFIG.md, "More loopbacks later").
 
 ## A DAW on one machine, a drum machine on another
 

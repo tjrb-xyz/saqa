@@ -1,16 +1,22 @@
 //! What saqa is told about this machine's devices, by whoever runs it
 //! (docs/CONFIG.md). Until saqa can ask audio-engine for its loopbacks, this
-//! is how it learns which device is the engine's streaming loopback:
+//! is how it learns which devices are the engine's loopbacks it may play into:
 //!
-//! - **sinks**: the devices a received stream may play into: the streaming
-//!   loopback. A receive link into anything else is refused (422). With none,
-//!   no receive link is allowed: saqa never guesses which devices are safe to
-//!   play into.
+//! - **sinks**: the loopbacks a received stream may play into, any number of
+//!   them and of any width: the streaming loopback, at least one 2-channel
+//!   loopback, and whatever loopbacks are made later for a room or a creative
+//!   use. A sink is an exact name or one `*` pattern (`ae rx *`). A receive
+//!   link into anything else is refused (422). With none, no receive link is
+//!   allowed: saqa never guesses which devices are safe to play into.
+//! - **widths**: how many channels a sink has, by its exact name, when
+//!   known. A receive link past a declared width is refused before anything
+//!   opens (400); without one, the device's own width is checked when it
+//!   opens.
 //! - **aliases**: words that name a device here, such as `stream` for the
 //!   streaming loopback (`dsper stream 16ch` on a machine with dsper today).
-//!   An alias may name one device, or one to capture
-//!   from (`send`) and another to play into (`receive`), as an ALSA loopback
-//!   does (`hw:CARD=dsperstream,DEV=1` and `DEV=0`).
+//!   An alias may name one device, or one to capture from (`send`) and
+//!   another to play into (`receive`), as an ALSA loopback does
+//!   (`hw:CARD=dsperstream,DEV=1` and `DEV=0`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -45,7 +51,13 @@ pub struct Devices {
     pub sinks: Vec<String>,
     #[serde(default)]
     pub aliases: BTreeMap<String, Alias>,
+    /// Declared channel counts of sinks, by exact device name.
+    #[serde(default)]
+    pub widths: BTreeMap<String, u16>,
 }
+
+/// The widest loopback a width may declare.
+pub const MAX_WIDTH: u16 = 64;
 
 /// `pattern` matches all of `name`, `*` standing for any run of characters.
 fn matches(pattern: &str, name: &str) -> bool {
@@ -87,6 +99,49 @@ impl Devices {
         self.sinks.iter().any(|p| matches(p, device))
     }
 
+    /// The declared width of `device`, if it has one.
+    pub fn width(&self, device: &str) -> Option<u16> {
+        self.widths.get(device).copied()
+    }
+
+    /// `DEVICE=N` (`--sink-width`): declares a sink's channel count. Split at
+    /// the last `=`, so ALSA names (`hw:CARD=x,DEV=0=2`) work.
+    pub fn set_width(&mut self, arg: &str) -> Result<(), String> {
+        let (device, n) = arg
+            .rsplit_once('=')
+            .filter(|(d, _)| !d.is_empty())
+            .ok_or_else(|| format!("'{arg}': give DEVICE=N"))?;
+        let n: u16 = n
+            .parse()
+            .ok()
+            .filter(|n| (1..=MAX_WIDTH).contains(n))
+            .ok_or_else(|| format!("'{arg}': the width is 1–{MAX_WIDTH} channels"))?;
+        self.widths.insert(device.to_string(), n);
+        Ok(())
+    }
+
+    /// Where a received stream may land, for a log line: each sink, and its
+    /// width when declared.
+    pub fn summary(&self) -> String {
+        if self.sinks.is_empty() {
+            return "none".into();
+        }
+        self.sinks
+            .iter()
+            .map(|s| match self.width(s) {
+                Some(n) => format!("{s} ({n}ch)"),
+                None => format!("{s} (width not declared)"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Whether some sink is declared 2 or more channels wide: somewhere a
+    /// stereo stream can land.
+    pub fn stereo_ready(&self) -> bool {
+        self.widths.values().any(|&n| n >= 2)
+    }
+
     /// An alias → its device for this direction; anything else is a device name already.
     pub fn resolve(&self, device: &str, receive: bool) -> String {
         match self.aliases.get(device) {
@@ -126,9 +181,34 @@ impl Devices {
         Ok(())
     }
 
-    /// Every alias word is a word.
+    /// Every alias word is a word; no sink could be every device; every
+    /// width names a sink exactly and is 1–64.
     pub fn check(&self) -> Result<(), String> {
-        self.aliases.keys().try_for_each(|w| check_word(w))
+        self.aliases.keys().try_for_each(|w| check_word(w))?;
+        for sink in &self.sinks {
+            if sink.chars().all(|c| c == '*') {
+                return Err(format!(
+                    "sink '{sink}': a pattern that matches every device could match an \
+                     interface; name the loopbacks"
+                ));
+            }
+        }
+        for (device, &n) in &self.widths {
+            if device.contains('*') {
+                return Err(format!(
+                    "width for '{device}': name one device, not a pattern"
+                ));
+            }
+            if !self.allows(device) {
+                return Err(format!("width for '{device}': no sink allows it"));
+            }
+            if !(1..=MAX_WIDTH).contains(&n) {
+                return Err(format!(
+                    "width for '{device}': 1–{MAX_WIDTH} channels, not {n}"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -197,5 +277,65 @@ mod tests {
         assert_eq!(json.resolve("daw", false), "dsper daw 16ch");
         assert_eq!(json.resolve("stream", true), "hw:CARD=dsperstream,DEV=0");
         assert!(json.sinks.is_empty());
+        assert!(json.widths.is_empty(), "widths are optional");
+    }
+
+    #[test]
+    fn widths_name_exact_sinks() {
+        let mut d = Devices {
+            sinks: vec![
+                "dsper stream 16ch".into(),
+                "hw:CARD=dspersystem,DEV=0".into(),
+                "ae rx *".into(),
+            ],
+            ..Default::default()
+        };
+        assert!(!d.stereo_ready());
+        d.set_width("hw:CARD=dspersystem,DEV=0=2").unwrap();
+        assert_eq!(d.width("hw:CARD=dspersystem,DEV=0"), Some(2));
+        d.set_width("dsper stream 16ch=16").unwrap();
+        assert_eq!(d.width("dsper stream 16ch"), Some(16));
+        assert_eq!(d.width("ae rx booth 2ch"), None);
+        for bad in ["x", "=2", "x=0", "x=65", "x=two"] {
+            assert!(d.clone().set_width(bad).is_err(), "{bad}");
+        }
+        assert!(d.check().is_ok());
+        assert!(d.stereo_ready());
+        assert_eq!(
+            d.summary(),
+            "dsper stream 16ch (16ch), hw:CARD=dspersystem,DEV=0 (2ch), ae rx * (width not declared)"
+        );
+        assert_eq!(Devices::default().summary(), "none");
+
+        let mut stray = d.clone();
+        stray.widths.insert("EVO16".into(), 16);
+        assert!(stray.check().unwrap_err().contains("no sink allows it"));
+        let mut pattern = d.clone();
+        pattern.widths.insert("ae rx *".into(), 2);
+        assert!(pattern.check().unwrap_err().contains("not a pattern"));
+        let mut mono = Devices {
+            sinks: vec!["m".into()],
+            ..Default::default()
+        };
+        mono.set_width("m=1").unwrap();
+        assert!(!mono.stereo_ready(), "one channel is not stereo");
+    }
+
+    #[test]
+    fn a_sink_cannot_be_every_device() {
+        for every in ["", "*", "**"] {
+            let d = Devices {
+                sinks: vec![every.into()],
+                ..Default::default()
+            };
+            assert!(d.check().is_err(), "'{every}'");
+        }
+        let d = Devices {
+            sinks: vec!["ae rx *".into()],
+            ..Default::default()
+        };
+        assert!(d.check().is_ok());
+        assert!(d.allows("ae rx booth 2ch"));
+        assert!(!d.allows("ae tx booth"));
     }
 }

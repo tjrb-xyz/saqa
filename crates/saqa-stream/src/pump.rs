@@ -7,10 +7,10 @@
 //! device's clock paces Roc, and Roc's latency tuner absorbs the difference
 //! from the sender's clock.
 
-use crate::audio::{Audio, RATE};
+use crate::audio::{Audio, Fault, RATE};
 use crate::{parse_peer, LinkSpec, LinkView};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const BLOCK: usize = (RATE / 100) as usize; // 10 ms
@@ -87,6 +87,25 @@ pub fn start(audio: Arc<dyn Audio>, spec: LinkSpec, view: Arc<Mutex<LinkView>>) 
     }
 }
 
+/// Where a device's fault lands: the link's loop reads it and fails the link.
+fn fault_cell() -> (Arc<OnceLock<String>>, Fault) {
+    let cell = Arc::new(OnceLock::new());
+    let c = cell.clone();
+    (
+        cell,
+        Box::new(move |why| {
+            let _ = c.set(why);
+        }),
+    )
+}
+
+fn went_away(cell: &OnceLock<String>) -> Result<(), String> {
+    match cell.get() {
+        Some(why) => Err(why.clone()),
+        None => Ok(()),
+    }
+}
+
 fn config(channels: usize, latency_ms: u32) -> saqa_roc::StreamConfig {
     saqa_roc::StreamConfig {
         channels: channels as u32,
@@ -115,6 +134,7 @@ fn send(
     let (mut prod, mut cons) = rtrb::RingBuffer::<f32>::new(BLOCK * n * 20);
     let lost = Arc::new(AtomicU64::new(0));
     let l = lost.clone();
+    let (gone, fault) = fault_cell();
     let _device = audio.capture(
         device,
         channels,
@@ -123,6 +143,7 @@ fn send(
                 l.fetch_add((frames.len() / n) as u64, Ordering::Relaxed);
             }
         }),
+        fault,
     )?;
     set(view, |v| {
         v.state = "running".into();
@@ -130,6 +151,7 @@ fn send(
     });
     let mut block = vec![0f32; BLOCK * n];
     while !stop.load(Ordering::Relaxed) {
+        went_away(&gone)?;
         if cons.slots() >= block.len() {
             pop_frames(&mut cons, &mut block, n);
             tx.write(&block)?;
@@ -169,6 +191,7 @@ fn receive(
     let (mut prod, mut cons) = rtrb::RingBuffer::<f32>::new(BLOCK * n * 3);
     let short = Arc::new(AtomicU64::new(0));
     let s2 = short.clone();
+    let (gone, fault) = fault_cell();
     let _device = audio.playback(
         device,
         channels,
@@ -176,6 +199,7 @@ fn receive(
             let silent = pop_frames(&mut cons, out, n);
             s2.fetch_add(silent as u64, Ordering::Relaxed);
         }),
+        fault,
     )?;
     set(view, |v| {
         v.state = "running".into();
@@ -185,6 +209,7 @@ fn receive(
     let mut last = Instant::now();
     let mut primed = false;
     while !stop.load(Ordering::Relaxed) {
+        went_away(&gone)?;
         if prod.slots() >= block.len() {
             rx.read(&mut block)?;
             push_all(&mut prod, &block); // room was counted above

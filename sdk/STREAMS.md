@@ -6,8 +6,9 @@ machine plugged into another machine. The app is the far end of a saqa **link**
 ([docs/STREAMING.md](../docs/STREAMING.md)):
 
 - **app → saqa:** the receiving machine has a *receive* link on a port (with dsper: Streams → Receive, into
-  `stream`). The app sends to `host:port`. What arrives lands only in audio-engine's streaming loopback on that machine
-  (with dsper today, **dsper stream 16ch**), and its speakers take it from there under their own protection. **The app
+  `stream`). The app sends to `host:port`. What arrives lands only in one of audio-engine's loopbacks on that machine
+  (with dsper today, **dsper stream 16ch**, or **dsper system 2ch** for stereo), and its speakers take it from
+  there under their own protection. **The app
   cannot reach an interface directly**: that rule is the receiving saqa's, and nothing a sender does changes it.
 - **saqa → app:** the app listens on a port; the other machine has a *send* link to `app-host:port`.
 
@@ -76,9 +77,9 @@ A link is standard Roc on three UDP ports from the one chosen, P:
   long, so a packet fits one UDP datagram.
 - FEC: `ROC_FEC_ENCODING_RS8M`. Frames: interleaved float32.
 
-## Why a stream lands in the streaming loopback
+## Why a stream lands in a loopback
 
-A stream is audio from another computer. saqa plays it only into audio-engine's streaming loopback, never into an
+A stream is audio from another computer. saqa plays it only into audio-engine's loopbacks, never into an
 interface. From there dsper routes it like any app's audio, through the receiving machine's checked pipeline —
 bands, limiter, ceiling, gate — which decides what reaches its speakers. So an app can send anything, including
 silence, noise or a full-scale sine, and the speakers are protected exactly as they are from a local app. The

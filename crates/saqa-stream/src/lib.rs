@@ -6,18 +6,21 @@
 //!   such as the DAW's, 5–6, or an interface's inputs where a drum machine is
 //!   plugged in) and streams them to another machine;
 //! - a *receive* link listens on a port and plays what arrives into chosen
-//!   channels of audio-engine's streaming loopback (its [`Devices`] sinks;
-//!   `dsper stream 16ch` on a machine with dsper today), from where dsper
-//!   routes it through its DSP.
+//!   channels of one of audio-engine's loopbacks that saqad is told it may
+//!   play into (its [`Devices`] sinks): the streaming loopback, a 2-channel
+//!   loopback for stereo, and any made later for a room or a creative use.
+//!   dsper routes it from there, through its DSP.
 //!
 //! That last rule is the safety line: audio from the network never reaches
-//! an interface directly. It lands in the streaming loopback, and only this
-//! machine's engine and dsper decide what the speakers get. A receive link
-//! into anything else is refused, and with no sinks configured every receive
-//! link is.
+//! an interface directly. It lands in a loopback, and only this machine's
+//! engine and dsper decide what the speakers get. A receive link into
+//! anything else is refused, and with no sinks configured every receive link
+//! is.
 //!
-//! The service keeps its links in a file and restarts them with saqad. Its
-//! REST API is at `/stream/v1` (see [`rest`]).
+//! The service keeps its links in a file and restarts them with saqad. A
+//! kept link that cannot run now waits (`failed`, detail [`WAITING`]…) and
+//! starts by itself when [`StreamService::set_devices`] lets it. Its REST API
+//! is at `/stream/v1` (see [`rest`]).
 
 pub mod audio;
 pub mod devices;
@@ -28,7 +31,7 @@ pub mod service;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 pub use audio::{Audio, CpalAudio};
 pub use devices::{Alias, Devices};
@@ -136,9 +139,9 @@ fn check_link(
         }
         LinkSpec::Receive {
             device,
+            channels,
             port,
             latency_ms,
-            ..
         } => {
             if !devices.allows(device) {
                 let allowed = if devices.sinks.is_empty() {
@@ -151,6 +154,14 @@ fn check_link(
                      never straight into '{device}': this machine's checked pipeline decides \
                      what reaches speakers"
                 )));
+            }
+            if let Some(w) = devices.width(device) {
+                if let Some(c) = channels.iter().find(|&&c| c >= u32::from(w)) {
+                    return Err(invalid(format!(
+                        "{device} has no channel {} ({w} channels)",
+                        c + 1
+                    )));
+                }
             }
             check_port(*port).map_err(invalid)?;
             if !(10..=2000).contains(latency_ms) {
@@ -188,17 +199,102 @@ pub struct LinkView {
     pub dropouts: u64,
 }
 
-struct Running {
+/// A kept link that cannot run now (its device is not allowed, or there is
+/// no libroc) shows as `failed`, with a detail that starts with this. It
+/// starts by itself when it can.
+pub const WAITING: &str = "waiting: ";
+
+struct Link {
+    spec: LinkSpec,
     view: Arc<Mutex<LinkView>>,
-    stop: pump::Stop,
+    /// The pump while the link runs; `None` while it waits.
+    run: Option<pump::Stop>,
 }
 
-/// The links, their pumps, and where they are kept.
+/// The links, their pumps, what may be received, and where links are kept.
+///
+/// Locks are taken in one order: `devices`, then `links`.
 pub struct StreamService {
     audio: Arc<dyn Audio>,
-    devices: Devices,
+    devices: RwLock<Devices>,
     file: Option<PathBuf>,
-    links: Mutex<BTreeMap<String, (LinkSpec, Running)>>,
+    links: Mutex<BTreeMap<String, Link>>,
+}
+
+/// What a change of devices did to the links.
+#[derive(Debug, Default, PartialEq)]
+pub struct Reconciled {
+    /// Links that ran, and now wait: their device is no longer allowed.
+    pub parked: Vec<String>,
+    /// Links that waited, and now run.
+    pub resumed: Vec<String>,
+}
+
+/// What a link becomes when what may be received changes.
+#[derive(Debug, PartialEq)]
+enum Action {
+    Keep,
+    Park(String),
+    Resume,
+}
+
+/// A pure decision: the same check a PUT runs, against the new devices.
+fn plan(
+    spec: &LinkSpec,
+    others: &BTreeMap<String, LinkSpec>,
+    devices: &Devices,
+    running: bool,
+    roc: &Result<(), String>,
+) -> Action {
+    match check_link(spec, others, devices) {
+        Err(r) => Action::Park(text(r)),
+        Ok(()) if running => Action::Keep,
+        Ok(()) => match roc {
+            Ok(()) => Action::Resume,
+            Err(m) => Action::Park(m.clone()),
+        },
+    }
+}
+
+fn text(r: Refused) -> String {
+    match r {
+        Refused::Invalid(m) | Refused::NotAnInput(m) | Refused::Unavailable(m) => m,
+    }
+}
+
+fn new_view(id: &str, spec: &LinkSpec) -> LinkView {
+    LinkView {
+        id: id.to_string(),
+        spec: spec.clone(),
+        state: "starting".into(),
+        detail: None,
+        connections: 0,
+        e2e_latency_ms: None,
+        dropouts: 0,
+    }
+}
+
+fn wait(view: &Mutex<LinkView>, why: &str) {
+    let mut v = view.lock().expect("view");
+    v.state = "failed".into();
+    v.detail = Some(format!("{WAITING}{why}"));
+    v.connections = 0;
+    v.e2e_latency_ms = None;
+}
+
+fn resolve(devices: &Devices, spec: &mut LinkSpec) {
+    match spec {
+        LinkSpec::Send { device, .. } => *device = devices.resolve(device, false),
+        LinkSpec::Receive { device, .. } => *device = devices.resolve(device, true),
+    }
+}
+
+fn others(links: &BTreeMap<String, Link>, id: &str) -> BTreeMap<String, LinkSpec> {
+    links
+        .iter()
+        .filter(|(k, _)| k.as_str() != id)
+        .map(|(k, l)| (k.clone(), l.spec.clone()))
+        .collect()
 }
 
 /// Link ids are what people name them: letters, digits, '-'.
@@ -221,6 +317,7 @@ pub enum Refused {
 
 impl StreamService {
     /// Starts the links kept in `file` (if any), with what `devices` allows.
+    /// A kept link that cannot start now is kept, waiting, never dropped.
     pub fn start(
         audio: Arc<dyn Audio>,
         devices: Devices,
@@ -228,7 +325,7 @@ impl StreamService {
     ) -> Arc<StreamService> {
         let s = Arc::new(StreamService {
             audio,
-            devices,
+            devices: RwLock::new(devices),
             file,
             links: Mutex::new(BTreeMap::new()),
         });
@@ -238,11 +335,31 @@ impl StreamService {
             .and_then(|f| std::fs::read_to_string(f).ok())
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
-        for (id, spec) in kept {
-            if let Err(e) = s.put(&id, spec) {
-                eprintln!("saqad: stream link '{id}': {e:?}");
+        if kept.is_empty() {
+            return s;
+        }
+        {
+            let devices = s.devices.read().expect("devices");
+            let mut links = s.links.lock().expect("links");
+            for (id, mut spec) in kept {
+                resolve(&devices, &mut spec);
+                if let Err(r) = s.admit(&devices, &mut links, &id, spec.clone()) {
+                    let why = text(r);
+                    eprintln!("saqad: stream link '{id}': {WAITING}{why}");
+                    let view = Arc::new(Mutex::new(new_view(&id, &spec)));
+                    wait(&view, &why);
+                    links.insert(
+                        id,
+                        Link {
+                            spec,
+                            view,
+                            run: None,
+                        },
+                    );
+                }
             }
         }
+        s.save();
         s
     }
 
@@ -251,65 +368,120 @@ impl StreamService {
         saqa_roc::Roc::get().map(|_| ())
     }
 
+    /// What may be received now.
+    pub fn devices(&self) -> Devices {
+        self.devices.read().expect("devices").clone()
+    }
+
     pub fn links(&self) -> Vec<LinkView> {
         self.links
             .lock()
             .expect("links")
             .values()
-            .map(|(_, r)| r.view.lock().expect("view").clone())
+            .map(|l| l.view.lock().expect("view").clone())
             .collect()
+    }
+
+    /// Checks `spec` (already resolved) and starts it as `id`, replacing a
+    /// link of that id. A refusal leaves the links as they were.
+    fn admit(
+        &self,
+        devices: &Devices,
+        links: &mut BTreeMap<String, Link>,
+        id: &str,
+        spec: LinkSpec,
+    ) -> Result<LinkView, Refused> {
+        check_id(id).map_err(Refused::Invalid)?;
+        check_link(&spec, &others(links, id), devices)?;
+        Self::available().map_err(Refused::Unavailable)?;
+        if let Some(run) = links.remove(id).and_then(|old| old.run) {
+            run.stop_and_wait();
+        }
+        let view = Arc::new(Mutex::new(new_view(id, &spec)));
+        let run = pump::start(self.audio.clone(), spec.clone(), view.clone());
+        let now = view.lock().expect("view").clone();
+        links.insert(
+            id.to_string(),
+            Link {
+                spec,
+                view,
+                run: Some(run),
+            },
+        );
+        Ok(now)
     }
 
     /// Adds or replaces a link, and starts it.
     pub fn put(&self, id: &str, mut spec: LinkSpec) -> Result<LinkView, Refused> {
-        check_id(id).map_err(Refused::Invalid)?;
-        match &mut spec {
-            LinkSpec::Send { device, .. } => *device = self.devices.resolve(device, false),
-            LinkSpec::Receive { device, .. } => *device = self.devices.resolve(device, true),
-        }
+        let devices = self.devices.read().expect("devices");
+        resolve(&devices, &mut spec);
         let mut links = self.links.lock().expect("links");
-        let others: BTreeMap<String, LinkSpec> = links
-            .iter()
-            .filter(|(k, _)| k.as_str() != id)
-            .map(|(k, (s, _))| (k.clone(), s.clone()))
-            .collect();
-        check_link(&spec, &others, &self.devices)?;
-        Self::available().map_err(Refused::Unavailable)?;
-        if let Some((_, old)) = links.remove(id) {
-            old.stop.stop_and_wait();
-        }
-        let view = Arc::new(Mutex::new(LinkView {
-            id: id.to_string(),
-            spec: spec.clone(),
-            state: "starting".into(),
-            detail: None,
-            connections: 0,
-            e2e_latency_ms: None,
-            dropouts: 0,
-        }));
-        let stop = pump::start(self.audio.clone(), spec.clone(), view.clone());
-        let now = view.lock().expect("view").clone();
-        links.insert(id.to_string(), (spec, Running { view, stop }));
+        let now = self.admit(&devices, &mut links, id, spec)?;
         drop(links);
+        drop(devices);
         self.save();
         Ok(now)
     }
 
     pub fn delete(&self, id: &str) -> bool {
-        let gone = self.links.lock().expect("links").remove(id);
-        let found = gone.is_some();
-        if let Some((_, r)) = gone {
-            r.stop.stop_and_wait();
+        let Some(gone) = self.links.lock().expect("links").remove(id) else {
+            return false;
+        };
+        if let Some(run) = gone.run {
+            run.stop_and_wait();
         }
         self.save();
-        found
+        true
+    }
+
+    /// Changes what may be received (a reload, or later the engine's
+    /// loopbacks), and re-checks every link against it with the check a PUT
+    /// runs: a running link its device no longer allows stops and waits; a
+    /// waiting link that now fits starts. A bad set changes nothing.
+    pub fn set_devices(&self, new: Devices) -> Result<Reconciled, String> {
+        new.check()?;
+        *self.devices.write().expect("devices") = new;
+        let roc = Self::available();
+        let mut done = Reconciled::default();
+        {
+            let devices = self.devices.read().expect("devices");
+            let mut links = self.links.lock().expect("links");
+            let ids: Vec<String> = links.keys().cloned().collect();
+            for id in ids {
+                let others = others(&links, &id);
+                let link = links.get_mut(&id).expect("listed");
+                match plan(&link.spec, &others, &devices, link.run.is_some(), &roc) {
+                    Action::Keep => {}
+                    Action::Park(why) => {
+                        if let Some(run) = link.run.take() {
+                            run.stop_and_wait();
+                            done.parked.push(id.clone());
+                        }
+                        wait(&link.view, &why);
+                    }
+                    Action::Resume => {
+                        *link.view.lock().expect("view") = new_view(&id, &link.spec);
+                        link.run = Some(pump::start(
+                            self.audio.clone(),
+                            link.spec.clone(),
+                            link.view.clone(),
+                        ));
+                        done.resumed.push(id.clone());
+                    }
+                }
+            }
+        }
+        self.save();
+        Ok(done)
     }
 
     /// Stops every link (saqad is exiting); they are still kept.
     pub fn shutdown(&self) {
         let mut links = self.links.lock().expect("links");
-        for (_, (_, r)) in std::mem::take(&mut *links) {
-            r.stop.stop_and_wait();
+        for (_, l) in std::mem::take(&mut *links) {
+            if let Some(run) = l.run {
+                run.stop_and_wait();
+            }
         }
     }
 
@@ -320,7 +492,7 @@ impl StreamService {
             .lock()
             .expect("links")
             .iter()
-            .map(|(k, (s, _))| (k.clone(), s.clone()))
+            .map(|(k, l)| (k.clone(), l.spec.clone()))
             .collect();
         let text = serde_json::to_string_pretty(&specs).expect("links serialize");
         let tmp = file.with_extension("tmp");
@@ -392,6 +564,107 @@ mod tests {
             check_link(&bad_channels, &BTreeMap::new(), &dsper()),
             Err(Refused::Invalid(_))
         ));
+        // The 2-channel loopback takes a stereo stream; without it as a
+        // sink, it is refused like any device not allowed.
+        assert!(check(&recv("dsper system 2ch", 20000), &BTreeMap::new(), &dsper()).is_ok());
+        let stream_only = Devices {
+            sinks: vec!["dsper stream 16ch".into()],
+            ..Default::default()
+        };
+        assert!(matches!(
+            check_link(
+                &recv("dsper system 2ch", 20000),
+                &BTreeMap::new(),
+                &stream_only
+            ),
+            Err(Refused::NotAnInput(_))
+        ));
+    }
+
+    fn recv_on(device: &str, channels: Vec<u32>) -> LinkSpec {
+        LinkSpec::Receive {
+            device: device.into(),
+            channels,
+            port: 20000,
+            latency_ms: 100,
+        }
+    }
+
+    #[test]
+    fn a_declared_width_is_checked_after_the_safety_line() {
+        let none = BTreeMap::new();
+        let mut d = dsper();
+        assert!(
+            check(&recv_on("dsper system 2ch", vec![0, 2]), &none, &d).is_ok(),
+            "no width declared: the device's own width is checked when it opens"
+        );
+        d.set_width("dsper system 2ch=2").unwrap();
+        for ok in [vec![0, 1], vec![1, 0], vec![1]] {
+            assert!(check(&recv_on("dsper system 2ch", ok), &none, &d).is_ok());
+        }
+        assert_eq!(
+            check_link(&recv_on("dsper system 2ch", vec![0, 2]), &none, &d),
+            Err(Refused::Invalid(
+                "dsper system 2ch has no channel 3 (2 channels)".into()
+            ))
+        );
+        assert!(
+            matches!(
+                check_link(&recv_on("EVO16", vec![0, 9]), &none, &d),
+                Err(Refused::NotAnInput(_))
+            ),
+            "an interface is refused as such first"
+        );
+    }
+
+    #[test]
+    fn links_follow_what_is_allowed() {
+        let none = BTreeMap::new();
+        let roc: Result<(), String> = Ok(());
+        let no_roc: Result<(), String> = Err("streaming needs libroc".into());
+        let system = recv_on("dsper system 2ch", vec![0, 1]);
+        let stream_only = Devices {
+            sinks: vec!["dsper stream 16ch".into()],
+            ..Default::default()
+        };
+        match plan(&system, &none, &stream_only, true, &roc) {
+            Action::Park(why) => assert!(
+                why.contains("never straight into 'dsper system 2ch'"),
+                "{why}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(plan(&system, &none, &dsper(), false, &roc), Action::Resume);
+        assert_eq!(
+            plan(&system, &none, &dsper(), false, &no_roc),
+            Action::Park("streaming needs libroc".into())
+        );
+        assert_eq!(plan(&system, &none, &dsper(), true, &roc), Action::Keep);
+        let send = LinkSpec::Send {
+            device: "dsper daw 16ch".into(),
+            channels: vec![4, 5],
+            to: "corner.local:20000".into(),
+        };
+        assert_eq!(
+            plan(&send, &none, &Devices::default(), true, &roc),
+            Action::Keep,
+            "a send link needs no sink"
+        );
+        let mut mono = dsper();
+        mono.set_width("dsper system 2ch=1").unwrap();
+        match plan(&system, &none, &mono, true, &roc) {
+            Action::Park(why) => assert!(why.contains("no channel 2"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+        let waiting: BTreeMap<String, LinkSpec> =
+            [("parked".into(), recv("dsper stream 16ch", 20001))].into();
+        assert!(
+            matches!(
+                plan(&system, &waiting, &dsper(), false, &roc),
+                Action::Park(why) if why.contains("overlap link 'parked'")
+            ),
+            "a waiting link still holds its ports"
+        );
     }
 
     #[test]
