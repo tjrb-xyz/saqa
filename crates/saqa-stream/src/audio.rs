@@ -445,8 +445,8 @@ mod tests {
                 "dsper system 2ch",
                 &[1, 0],
                 Box::new(|out| {
-                    for f in out.chunks_exact_mut(2) {
-                        f.copy_from_slice(&[0.25, 0.5]);
+                    for (i, s) in out.iter_mut().enumerate() {
+                        *s = if i % 2 == 0 { 0.25 } else { 0.5 };
                     }
                 }),
                 quiet(),
