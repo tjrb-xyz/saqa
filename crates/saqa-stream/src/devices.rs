@@ -13,10 +13,10 @@
 //!   opens (400); without one, the device's own width is checked when it
 //!   opens.
 //! - **aliases**: words that name a device here, such as `stream` for the
-//!   streaming loopback (`dsper stream 16ch` on a machine with dsper today).
+//!   streaming loopback (`stream in 16ch` on a machine with dsper today).
 //!   An alias may name one device, or one to capture from (`send`) and
 //!   another to play into (`receive`), as an ALSA loopback does
-//!   (`hw:CARD=dsperstream,DEV=1` and `DEV=0`).
+//!   (`hw:CARD=stream,DEV=1` and `DEV=0`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -225,27 +225,28 @@ mod tests {
     #[test]
     fn sinks_match_exactly_or_by_wildcard() {
         let d = Devices {
-            sinks: vec!["dsper stream 16ch".into(), "hw:CARD=dsper*,DEV=0".into()],
+            sinks: vec!["stream in 16ch".into(), "hw:CARD=dsper*,DEV=0".into()],
             ..Default::default()
         };
         for ok in [
-            "dsper stream 16ch",
-            "hw:CARD=dsperstream,DEV=0",
+            "stream in 16ch",
+            "hw:CARD=dspersystem,DEV=0",
             "hw:CARD=dsperdaw,DEV=0",
         ] {
             assert!(d.allows(ok), "{ok}");
         }
         for no in [
             "EVO16",
-            "dsper stream 16ch ",
-            "dsper stream",
-            "hw:CARD=dsperstream,DEV=1",
-            "plughw:CARD=dsperstream,DEV=0",
+            "stream in 16ch ",
+            "stream in",
+            "hw:CARD=dspersystem,DEV=1",
+            "plughw:CARD=dspersystem,DEV=0",
+            "hw:CARD=streamin,DEV=0",
         ] {
             assert!(!d.allows(no), "{no}");
         }
         assert!(
-            !Devices::default().allows("dsper stream 16ch"),
+            !Devices::default().allows("stream in 16ch"),
             "no sinks, no receiving"
         );
         assert!(matches("*", ""));
@@ -257,25 +258,25 @@ mod tests {
     fn aliases_name_a_device_or_one_per_direction() {
         let mut d = Devices::default();
         d.set_alias("system=dsper system 2ch", None).unwrap();
-        d.set_alias("stream=hw:CARD=dsperstream,DEV=0", Some(Direction::Receive))
+        d.set_alias("stream=hw:CARD=streamin,DEV=0", Some(Direction::Receive))
             .unwrap();
-        d.set_alias("stream=hw:CARD=dsperstream,DEV=1", Some(Direction::Send))
+        d.set_alias("stream=hw:CARD=stream,DEV=1", Some(Direction::Send))
             .unwrap();
         assert_eq!(d.resolve("system", true), "dsper system 2ch");
         assert_eq!(d.resolve("system", false), "dsper system 2ch");
-        assert_eq!(d.resolve("stream", true), "hw:CARD=dsperstream,DEV=0");
-        assert_eq!(d.resolve("stream", false), "hw:CARD=dsperstream,DEV=1");
+        assert_eq!(d.resolve("stream", true), "hw:CARD=streamin,DEV=0");
+        assert_eq!(d.resolve("stream", false), "hw:CARD=stream,DEV=1");
         assert_eq!(d.resolve("EVO16", true), "EVO16");
         assert!(d.set_alias("stream", None).is_err());
         assert!(d.set_alias("two words=x", None).is_err());
 
         let json: Devices = serde_json::from_str(
             r#"{"aliases": {"daw": "dsper daw 16ch",
-                            "stream": {"send": "hw:CARD=dsperstream,DEV=1", "receive": "hw:CARD=dsperstream,DEV=0"}}}"#,
+                            "stream": {"send": "hw:CARD=stream,DEV=1", "receive": "hw:CARD=streamin,DEV=0"}}}"#,
         )
         .unwrap();
         assert_eq!(json.resolve("daw", false), "dsper daw 16ch");
-        assert_eq!(json.resolve("stream", true), "hw:CARD=dsperstream,DEV=0");
+        assert_eq!(json.resolve("stream", true), "hw:CARD=streamin,DEV=0");
         assert!(json.sinks.is_empty());
         assert!(json.widths.is_empty(), "widths are optional");
     }
@@ -284,7 +285,7 @@ mod tests {
     fn widths_name_exact_sinks() {
         let mut d = Devices {
             sinks: vec![
-                "dsper stream 16ch".into(),
+                "stream in 16ch".into(),
                 "hw:CARD=dspersystem,DEV=0".into(),
                 "ae rx *".into(),
             ],
@@ -293,8 +294,8 @@ mod tests {
         assert!(!d.stereo_ready());
         d.set_width("hw:CARD=dspersystem,DEV=0=2").unwrap();
         assert_eq!(d.width("hw:CARD=dspersystem,DEV=0"), Some(2));
-        d.set_width("dsper stream 16ch=16").unwrap();
-        assert_eq!(d.width("dsper stream 16ch"), Some(16));
+        d.set_width("stream in 16ch=16").unwrap();
+        assert_eq!(d.width("stream in 16ch"), Some(16));
         assert_eq!(d.width("ae rx booth 2ch"), None);
         for bad in ["x", "=2", "x=0", "x=65", "x=two"] {
             assert!(d.clone().set_width(bad).is_err(), "{bad}");
@@ -303,7 +304,7 @@ mod tests {
         assert!(d.stereo_ready());
         assert_eq!(
             d.summary(),
-            "dsper stream 16ch (16ch), hw:CARD=dspersystem,DEV=0 (2ch), ae rx * (width not declared)"
+            "stream in 16ch (16ch), hw:CARD=dspersystem,DEV=0 (2ch), ae rx * (width not declared)"
         );
         assert_eq!(Devices::default().summary(), "none");
 

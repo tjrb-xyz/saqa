@@ -2,37 +2,57 @@
 
 ## Who does what
 
-The owner (2026-10-01): audio is streamed from audio-engine; dsper only does DSP and patches audio routes between
-devices for the situation at hand. dsper may summon virtual devices from audio-engine; they run separately, but
-audio-engine owns them.
+The owner's words, as the engine and dsper record them:
 
-| | Owns | In saqa's terms |
+- "the audio should be streamed from audio-engine; dsper is only in charge of dsp and patching audio routes
+  between devices" (2026-10-01; the engine's D-093).
+- "audio devices including virtual audio devices (loopbacks, virtual outputs and input interfaces) including
+  physical interfaces and instruments are all ultimately owned by audio-engine" (the engine's D-094), and
+  "for the device manager per saqa it's owned by audio engine and managed by saqa" (D-099). One rule for every
+  device: the engine owns it, the program that uses it manages it, by a lease (D-100).
+- "saqa is the device manager and can ask for input from main or from dsper or other audio passthrough
+  devices" (D-095): saqa chooses what feeds its streaming loopback, through the engine's SDK.
+- "dsper comes in the chain before saqa, saqa in itself can be thought of as an output", and "When listening to
+  saqa's stream loopback device, we should hear dsper's mix, or the system sound. saqa chooses which device
+  sends to stream loopback device" (dsper's owner decision #20, 2026-10-02). Received audio goes to a second
+  device, which dsper reads as its `stream` input.
+- We need to receive playback on at least one 2-channel loopback, and to make more devices later "for
+  receiving playback and creative use cases in various places" (2026-10-02).
+
+| | Owns or manages | In saqa's terms |
 |---|---|---|
-| **audio-engine** | Audio itself: devices, streams, playback, the real-time path, the one view of how devices connect (its D-093), and the virtual devices (loopbacks, `ae-device`), whoever asked for them | Where saqa's audio comes from and goes to: a send link reads a loopback, a receive link plays into one |
-| **dsper** | DSP (CamillaDSP, rooms, speaker systems) and routing: which device feeds which, for the situation. It may ask the engine for a virtual device (a loopback) and route through it | Routes what saqa receives on to speakers, through its DSP; routes what should be sent into the streaming loopback. Calls saqa's API for its Streams view and MCP tools |
-| **saqa** | Carrying audio between machines (Roc), its links and its API | Plays received streams only into the engine's loopbacks it is told are receivable: the streaming loopback, at least one 2-channel loopback for stereo, and any number made later for rooms and creative uses |
+| **audio-engine** | Owns every device, physical or virtual, and the audio itself: streams, playback, the real-time path, the one view of how devices connect (D-093, D-094). Gives control of a device as a lease | Where saqa's audio comes from and goes to |
+| **dsper** | DSP (CamillaDSP, rooms, speaker systems) and routing, on devices it manages by lease. Builds and installs the loopbacks today, as the engine's stand-in, until the engine ships them (dsper's #18, #19) | Reads what saqa receives (`stream in 16ch`) as its `stream` input and routes it through its DSP; its mix is one source saqa may send. Calls saqa's API for its Streams view and MCP tools |
+| **saqa** | Carries audio between machines (Roc), its links and its API. **Manages the streaming loopback** (D-099), and chooses its source (D-095) | Sends what the `stream 16ch` loopback carries; plays received streams only into the loopbacks it is told are receivable: `stream in 16ch`, at least one 2-channel loopback, and any number made later |
 
-So saqa never plays into a device dsper owns, or into an interface: only into a loopback the engine owns, which
-dsper then routes. The engine itself does no network streaming (its D-088).
+So saqa never plays into a device dsper routes to speakers, or into an interface: only into a receive loopback,
+which dsper then routes. The engine itself does no network streaming (its D-088).
 
-The engine's own record of this split is D-093 (branch `claude/devices`, idea 13). It still says dsper installs
-the loopback devices; the owner's later words above put them under the engine. That is the engine's to
-reconcile; saqa follows the owner.
+Open, and the owner's (dsper's #19 and its PR comment on saqa#1):
+- **"Single tap"**: if the engine becomes each loopback's only reader, saqa's send link reads the engine's tap as
+  an attached client instead of opening `stream 16ch` itself, and the sink check becomes role plus lease.
+- **One streaming device or two**: the engine's D-095 names one streaming loopback; dsper's #20 split it into a
+  send device and a receive device.
+- **Whether a send link may still capture any device**, as `LinkSpec.device` allows today, or only what the
+  engine routes into `stream 16ch`.
 
 ## Where saqa is today
 
-**saqa does not depend on audio-engine yet:** the engine has no licence (its D-033 is open, and its `main` has
-no LICENSE file). saqa is MIT and cannot take a dependency it may not distribute. Until then:
+**saqa does not depend on audio-engine yet:** the engine has no licence (its D-033 is open, and neither `main`
+nor `claude/devices` has a LICENSE file). saqa is MIT and cannot take a dependency it may not distribute. Until
+then:
 
 - saqa opens devices through cpal (`CpalAudio`), as it did in dsper;
-- it is told which devices are the engine's receivable loopbacks, as sinks with their widths, and aliases
-  (docs/CONFIG.md). On a machine with dsper today they appear to the OS as `dsper stream 16ch` and
-  `dsper system 2ch` (macOS) or `hw:CARD=dsperstream` and `hw:CARD=dspersystem` (Linux): the device names
-  change, saqa does not;
-- it learns of a loopback made later when its config file changes and it gets SIGHUP.
+- it is told which devices are the loopbacks, as sinks with their widths, and aliases (docs/CONFIG.md). With
+  dsper today they are `stream in 16ch`, `stream 16ch` and `dsper system 2ch` (macOS), or `hw:CARD=streamin`,
+  `hw:CARD=stream` and `hw:CARD=dspersystem` (Linux): the device names change, saqa does not;
+- it learns of a loopback made later when its config file changes and it gets SIGHUP;
+- it cannot yet choose what feeds `stream 16ch`: that is the engine routing a source into the loopback (D-095),
+  which nothing builds yet. Until then whatever plays into `stream 16ch` (dsper's routing, or a person) is what
+  `stream` sends.
 
 Engine facts below were checked on audio-engine `main` at `549c9cc` (`ae-device`, merged in #5) and
-`claude/devices` at `b0a89e1` (`ae-io`, the daemon's devices).
+`claude/devices` at `7c14d87` (`ae-io`, the daemon's devices, D-094 to D-100).
 
 ## How saqa composes the engine
 
@@ -99,9 +119,9 @@ alike.
 These were dsper's asks of the engine for its streaming (dsper docs/AUDIO-ENGINE.md, parity table); with
 streaming in saqa, they are saqa's.
 
-| # | saqa needs | Used by | `ae-io` at `claude/devices` `b0a89e1` |
+| # | saqa needs | Used by | `ae-io` at `claude/devices` `7c14d87` |
 |---|---|---|---|
-| **G4** | Capture from a **named** device; capture-only and playback-only streams; several streams at once (one per link) | `Audio::capture` / `playback`, the pump | Devices open by id now (G1–G3, `claude/devices`), but input still opens the default input (`cpal_dev.rs:69`); streams are output-driven duplex |
+| **G4** | Capture from a **named** device; capture-only and playback-only streams; several streams at once (one per link) | `Audio::capture` / `playback`, the pump | Devices open by id (G1–G3), and input now follows the device asked for (`cpal_dev.rs:139-146`); but streams are still output-driven, with input on a second stream through a ring |
 | **G5** | I16 and I32 devices converted to f32; the exact channels asked (a subset of a wider device, in the link's order), at 48 kHz | `CpalAudio::config`, `pick`/`spread` | f32 configs with exactly the requested channel count only (`cpal_dev.rs:88`) |
 | **G6** | Xruns and stream errors, per stream | a link's `dropouts` and `detail` | `reports_xruns: false` (`cpal_dev.rs:197`); errors through `Reporter` |
 
@@ -113,8 +133,9 @@ And two more that were dsper's and now apply to saqa:
 | G9 | A licence under which MIT saqa may depend on `ae-io` and `ae-device` (the engine's D-033), and a pinned tag | everything above |
 
 Also noted for whoever builds `AeAudio`: open devices with `ae-io`'s `Device::Id`, not `Device::Named`, which
-matches a name by *substring* (`cpal_dev.rs:59`). saqa matches the exact name or id, and that matters for the
-safety line: a sink named `dsper stream 16ch` must not open some other device whose name contains it.
+matches a name by *substring* (`cpal_dev.rs:59`, still on `7c14d87`). saqa matches the exact name or id, and that
+matters: by substring, `stream 16ch` also matches `dsper stream 16ch`, the old device still installed on a
+machine that has not reinstalled dsper's devices, and a link must never open a device it was not named.
 
 ## If saqa adopts the engine's build settings
 

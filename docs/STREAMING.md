@@ -7,11 +7,13 @@ apart.
 
 A **link** goes one way:
 
-- a **send** link captures chosen channels of a device on this machine (a role such as `daw`, or an
-  interface's inputs where an instrument is plugged in) and streams them to `host:port`;
+- a **send** link captures chosen channels of a device on this machine and streams them to `host:port`: the
+  **stream loopback** (`stream`, with dsper today **stream 16ch**), which carries dsper's mix or the system sound
+  as saqa chooses, or another loopback (`daw`, `system`), or an interface's inputs where an instrument is plugged
+  in;
 - a **receive** link listens on a port and plays what arrives into chosen channels of one of audio-engine's
-  loopbacks, virtual devices the engine owns: the **streaming loopback** (16 channels; with dsper today
-  **dsper stream 16ch**), a **2-channel loopback** for stereo (with dsper today **dsper system 2ch**), or any
+  loopbacks, virtual devices the engine owns: the **receive loopback** (16 channels; with dsper today
+  **stream in 16ch**, dsper's `stream` input), a **2-channel loopback** for stereo (with dsper today **dsper system 2ch**), or any
   loopback made later for a room or a creative use. dsper routes it from there, through its DSP, to speakers.
 
 audio-engine carries the audio and owns the virtual devices; dsper does DSP and routing, and may summon those
@@ -30,9 +32,9 @@ speakers after the sink is the host's (dsper protects what enters its inputs).
 ```sh
 scripts/roc.sh      # libroc 0.4 into .saqa/lib (needs SCons, ragel, CMake; on Linux autotools)
 cargo build --release
-target/release/saqad --sink 'dsper stream 16ch' --sink 'dsper system 2ch' \
-  --sink-width 'dsper stream 16ch=16' --sink-width 'dsper system 2ch=2' \
-  --alias 'stream=dsper stream 16ch' --alias 'system=dsper system 2ch'
+target/release/saqad --sink 'stream in 16ch' --sink 'dsper system 2ch' \
+  --sink-width 'stream in 16ch=16' --sink-width 'dsper system 2ch=2' \
+  --alias-receive 'stream=stream in 16ch' --alias-send 'stream=stream 16ch' --alias 'system=dsper system 2ch'
 ```
 
 saqad serves `/stream/v1` on `127.0.0.1:8486` (docs/API.md). With dsper, dsperd runs or reaches saqad, names the
@@ -69,7 +71,7 @@ return, an installation. Each becomes a place a stream can land once saqad is to
 
 The drum machine is plugged into an interface on a bridge machine; the DAW runs on another Mac.
 
-1. **DAW machine:** receive `drums` on port `20010` into `stream 1–8`. In the DAW, pick **dsper stream 16ch** as
+1. **DAW machine:** receive `drums` on port `20010` into `stream 1–8`. In the DAW, pick **stream in 16ch** as
    the input device: tracks on inputs 1–8 record the drum machine.
 2. **Bridge machine:** send `drums` from the interface (its name in the list, e.g. `TR-8S`), channels `1–8`, to
    `daw-mac.local:20010`.

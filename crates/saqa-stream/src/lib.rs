@@ -524,11 +524,11 @@ mod tests {
             sinks: vec![
                 "dsper system 2ch".into(),
                 "dsper daw 16ch".into(),
-                "dsper stream 16ch".into(),
+                "stream in 16ch".into(),
             ],
             ..Default::default()
         };
-        d.set_alias("stream=dsper stream 16ch", None).unwrap();
+        d.set_alias("stream=stream in 16ch", None).unwrap();
         d
     }
 
@@ -536,18 +536,10 @@ mod tests {
     fn streams_land_only_in_allowed_inputs() {
         let e = check(&recv("EVO16", 20000), &BTreeMap::new(), &dsper()).unwrap_err();
         assert!(e.contains("never straight into 'EVO16'"), "{e}");
-        assert!(
-            e.contains("dsper stream 16ch"),
-            "says which are allowed: {e}"
-        );
-        assert!(check(
-            &recv("dsper stream 16ch", 20000),
-            &BTreeMap::new(),
-            &dsper()
-        )
-        .is_ok());
+        assert!(e.contains("stream in 16ch"), "says which are allowed: {e}");
+        assert!(check(&recv("stream in 16ch", 20000), &BTreeMap::new(), &dsper()).is_ok());
         let none = Devices::default();
-        let e = check(&recv("dsper stream 16ch", 20000), &BTreeMap::new(), &none).unwrap_err();
+        let e = check(&recv("stream in 16ch", 20000), &BTreeMap::new(), &none).unwrap_err();
         assert!(e.contains("none is configured"), "{e}");
         assert_eq!(
             check_link(&recv("EVO16", 80), &BTreeMap::new(), &dsper()),
@@ -568,7 +560,7 @@ mod tests {
         // sink, it is refused like any device not allowed.
         assert!(check(&recv("dsper system 2ch", 20000), &BTreeMap::new(), &dsper()).is_ok());
         let stream_only = Devices {
-            sinks: vec!["dsper stream 16ch".into()],
+            sinks: vec!["stream in 16ch".into()],
             ..Default::default()
         };
         assert!(matches!(
@@ -624,7 +616,7 @@ mod tests {
         let no_roc: Result<(), String> = Err("streaming needs libroc".into());
         let system = recv_on("dsper system 2ch", vec![0, 1]);
         let stream_only = Devices {
-            sinks: vec!["dsper stream 16ch".into()],
+            sinks: vec!["stream in 16ch".into()],
             ..Default::default()
         };
         match plan(&system, &none, &stream_only, true, &roc) {
@@ -657,7 +649,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         let waiting: BTreeMap<String, LinkSpec> =
-            [("parked".into(), recv("dsper stream 16ch", 20001))].into();
+            [("parked".into(), recv("stream in 16ch", 20001))].into();
         assert!(
             matches!(
                 plan(&system, &waiting, &dsper(), false, &roc),
@@ -688,11 +680,11 @@ mod tests {
         assert!(check(&send("pi:20000", (0..17).collect()), &none).is_err());
         assert!(check(&send("pi:20000", vec![1, 1]), &none).is_err());
         let taken: BTreeMap<String, LinkSpec> =
-            [("a".into(), recv("dsper stream 16ch", 20000))].into();
-        assert!(check(&recv("dsper stream 16ch", 20002), &taken)
+            [("a".into(), recv("stream in 16ch", 20000))].into();
+        assert!(check(&recv("stream in 16ch", 20002), &taken)
             .unwrap_err()
             .contains("overlap link 'a'"));
-        assert!(check(&recv("dsper stream 16ch", 20003), &taken).is_ok());
+        assert!(check(&recv("stream in 16ch", 20003), &taken).is_ok());
         assert_eq!(check_id("vintage-corner"), Ok(()));
         assert!(check_id("a b").is_err());
     }
@@ -701,7 +693,7 @@ mod tests {
     fn a_link_view_names_each_field_once() {
         let v = LinkView {
             id: "x".into(),
-            spec: recv("dsper stream 16ch", 20000),
+            spec: recv("stream in 16ch", 20000),
             state: "running".into(),
             detail: None,
             connections: 1,
@@ -720,12 +712,12 @@ mod tests {
     #[test]
     fn specs_are_plain_json() {
         let s: LinkSpec = serde_json::from_str(
-            r#"{"direction": "receive", "device": "dsper stream 16ch", "channels": [0, 1], "port": 20000}"#,
+            r#"{"direction": "receive", "device": "stream in 16ch", "channels": [0, 1], "port": 20000}"#,
         )
         .unwrap();
         assert_eq!(
             s,
-            recv("dsper stream 16ch", 20000),
+            recv("stream in 16ch", 20000),
             "latency defaults to 100 ms"
         );
     }

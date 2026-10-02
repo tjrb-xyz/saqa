@@ -2,9 +2,9 @@
 
 saqa carries audio between machines (Roc links, `/stream/v1`). It came from dsper (tjrb-xyz/dsper@7afd988;
 dsper's docs/SAQA.md and docs/research/OWNER-DECISIONS.md #17). audio-engine carries the audio and owns the virtual
-devices (dsper may summon them); dsper does DSP and routing; saqa reads from and plays into the engine's loopbacks
-it is told are receivable: the streaming loopback, at least one 2-channel loopback, and any number made later
-(docs/AUDIO-ENGINE.md, "Who does what"). dsper calls this API through dsperd, so **the API is a contract**:
+devices (dsper may summon them); dsper does DSP and routing; saqa manages the streaming loopback (`stream 16ch`,
+what it sends) and plays received streams only into the loopbacks it is told are receivable: `stream in 16ch`,
+at least one 2-channel loopback, and any number made later (docs/AUDIO-ENGINE.md, "Who does what"). dsper calls this API through dsperd, so **the API is a contract**:
 routes, bodies, statuses, `LinkSpec` and `LinkView` change only together with dsper (docs/API.md lists every
 difference from dsper's service). If code and docs disagree, fix one of them in the same change.
 

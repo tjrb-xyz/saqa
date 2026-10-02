@@ -16,7 +16,7 @@ fn dsper() -> Devices {
         sinks: vec![
             "dsper system 2ch".into(),
             "dsper daw 16ch".into(),
-            "dsper stream 16ch".into(),
+            "stream in 16ch".into(),
         ],
         ..Default::default()
     }
@@ -63,7 +63,7 @@ fn an_app_streams_sixteen_channels_into_a_dsper_input() {
     saqa.put(
         "from-app",
         LinkSpec::Receive {
-            device: "dsper stream 16ch".into(),
+            device: "stream in 16ch".into(),
             channels: (0..16).collect(),
             port,
             latency_ms: 60,
@@ -77,7 +77,7 @@ fn an_app_streams_sixteen_channels_into_a_dsper_input() {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(4);
     let frame = loop {
-        let f = audio.played("dsper stream 16ch");
+        let f = audio.played("stream in 16ch");
         if let Some(f) = f.filter(|f| f.iter().all(|s| s.abs() > 1e-3)) {
             break f;
         }

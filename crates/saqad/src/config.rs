@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(c.token, Token::File(dir.path().join("token")));
         assert_eq!(c.links, Some(dir.path().join("streams.json")));
         assert_eq!(c.devices, Devices::default());
-        assert!(!c.devices.allows("dsper stream 16ch"));
+        assert!(!c.devices.allows("stream in 16ch"));
     }
 
     #[test]
@@ -174,8 +174,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("saqad.json"),
-            r#"{"port": 9000, "sinks": ["hw:CARD=dsperstream,DEV=0"],
-                "aliases": {"stream": {"send": "hw:CARD=dsperstream,DEV=1", "receive": "hw:CARD=dsperstream,DEV=0"},
+            r#"{"port": 9000, "sinks": ["hw:CARD=streamin,DEV=0"],
+                "aliases": {"stream": {"send": "hw:CARD=stream,DEV=1", "receive": "hw:CARD=streamin,DEV=0"},
                             "daw": "hw:CARD=dsperdaw,DEV=1"},
                 "links": "/var/lib/saqa/streams.json", "allow_hosts": ["Studio.local"]}"#,
         )
@@ -185,7 +185,7 @@ mod tests {
                 "--port",
                 "9001",
                 "--sink",
-                "plughw:CARD=dsperstream,DEV=0",
+                "plughw:CARD=streamin,DEV=0",
                 "--alias-send",
                 "daw=hw:CARD=dsperdaw,DEV=2",
                 "--allow-host",
@@ -198,12 +198,9 @@ mod tests {
         .unwrap();
         assert_eq!(c.port, 9001);
         assert_eq!(c.token, Token::File("/run/dsper/saqa-token".into()));
-        assert!(c.devices.allows("hw:CARD=dsperstream,DEV=0"));
-        assert!(c.devices.allows("plughw:CARD=dsperstream,DEV=0"));
-        assert_eq!(
-            c.devices.resolve("stream", false),
-            "hw:CARD=dsperstream,DEV=1"
-        );
+        assert!(c.devices.allows("hw:CARD=streamin,DEV=0"));
+        assert!(c.devices.allows("plughw:CARD=streamin,DEV=0"));
+        assert_eq!(c.devices.resolve("stream", false), "hw:CARD=stream,DEV=1");
         assert_eq!(c.devices.resolve("daw", false), "hw:CARD=dsperdaw,DEV=2");
         assert_eq!(c.devices.resolve("daw", true), "hw:CARD=dsperdaw,DEV=1");
         assert_eq!(c.links, Some("/var/lib/saqa/streams.json".into()));
@@ -232,25 +229,25 @@ mod tests {
         let c = Config::parse(
             &args(&[
                 "--sink",
-                "hw:CARD=dsperstream,DEV=0",
+                "hw:CARD=streamin,DEV=0",
                 "--sink",
-                "plughw:CARD=dsperstream,DEV=0",
+                "plughw:CARD=streamin,DEV=0",
                 "--sink",
                 "hw:CARD=dspersystem,DEV=0",
                 "--sink",
                 "plughw:CARD=dspersystem,DEV=0",
                 "--sink-width",
-                "hw:CARD=dsperstream,DEV=0=16",
+                "hw:CARD=streamin,DEV=0=16",
                 "--sink-width",
-                "plughw:CARD=dsperstream,DEV=0=16",
+                "plughw:CARD=streamin,DEV=0=16",
                 "--sink-width",
                 "hw:CARD=dspersystem,DEV=0=2",
                 "--sink-width",
                 "plughw:CARD=dspersystem,DEV=0=2",
                 "--alias-receive",
-                "stream=hw:CARD=dsperstream,DEV=0",
+                "stream=hw:CARD=streamin,DEV=0",
                 "--alias-send",
-                "stream=hw:CARD=dsperstream,DEV=1",
+                "stream=hw:CARD=stream,DEV=1",
                 "--alias-receive",
                 "system=hw:CARD=dspersystem,DEV=0",
                 "--alias-send",
@@ -268,7 +265,7 @@ mod tests {
         assert!(!d.allows("hw:CARD=dspersystem,DEV=1"));
         assert_eq!(d.width("hw:CARD=dspersystem,DEV=0"), Some(2));
         assert_eq!(d.width("plughw:CARD=dspersystem,DEV=0"), Some(2));
-        assert_eq!(d.width("hw:CARD=dsperstream,DEV=0"), Some(16));
+        assert_eq!(d.width("hw:CARD=streamin,DEV=0"), Some(16));
         assert!(d.stereo_ready());
         assert_eq!(d.resolve("daw", true), "hw:CARD=dsperdaw,DEV=1");
         assert!(

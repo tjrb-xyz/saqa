@@ -7,7 +7,7 @@ machine plugged into another machine. The app is the far end of a saqa **link**
 
 - **app → saqa:** the receiving machine has a *receive* link on a port (with dsper: Streams → Receive, into
   `stream`). The app sends to `host:port`. What arrives lands only in one of audio-engine's loopbacks on that machine
-  (with dsper today, **dsper stream 16ch**, or **dsper system 2ch** for stereo), and its speakers take it from
+  (with dsper today, **stream in 16ch**, or **dsper system 2ch** for stereo), and its speakers take it from
   there under their own protection. **The app
   cannot reach an interface directly**: that rule is the receiving saqa's, and nothing a sender does changes it.
 - **saqa → app:** the app listens on a port; the other machine has a *send* link to `app-host:port`.

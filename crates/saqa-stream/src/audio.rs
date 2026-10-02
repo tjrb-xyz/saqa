@@ -434,7 +434,7 @@ mod tests {
     fn memory_devices_are_as_wide_as_they_are_told() {
         let audio = MemoryAudio::default().with_width("dsper system 2ch", 2);
         assert_eq!(audio.width("dsper system 2ch"), 2);
-        assert_eq!(audio.width("dsper stream 16ch"), MEMORY_WIDTH);
+        assert_eq!(audio.width("stream in 16ch"), MEMORY_WIDTH);
         let refused = audio
             .playback("dsper system 2ch", &[2], Box::new(|_| {}), quiet())
             .expect_err("a 2-channel device has no third channel");

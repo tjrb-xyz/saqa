@@ -52,11 +52,11 @@ interface), and a width must name one sink exactly.
 {
   "port": 8486,
   "token_file": "/Users/me/.config/saqa/token",
-  "sinks": ["dsper stream 16ch", "dsper system 2ch"],
-  "sink_widths": { "dsper stream 16ch": 16, "dsper system 2ch": 2 },
+  "sinks": ["stream in 16ch", "dsper system 2ch"],
+  "sink_widths": { "stream in 16ch": 16, "dsper system 2ch": 2 },
   "aliases": {
     "daw": "dsper daw 16ch",
-    "stream": { "send": "hw:CARD=dsperstream,DEV=1", "receive": "hw:CARD=dsperstream,DEV=0" }
+    "stream": { "send": "stream 16ch", "receive": "stream in 16ch" }
   },
   "links": "/Users/me/.config/saqa/streams.json",
   "import_links": "/Users/me/.config/dsper/streams.json",
@@ -70,38 +70,46 @@ over the file: lists add, an alias flag replaces that alias (or that direction o
 
 ## Pointing saqad at the loopbacks
 
-audio-engine owns the virtual devices; dsper may summon them from the engine and routes through them. Until saqa
-can ask the engine for its loopbacks itself (docs/AUDIO-ENGINE.md), whoever runs saqad names them. On a machine
-with dsper today, the loopbacks show to the OS under dsper's names:
+audio-engine owns every audio device; the program that uses a device manages it (the engine's D-094, D-099,
+D-100). saqa manages the streaming loopback; dsper manages the devices it routes through. Until saqa can ask the
+engine for its loopbacks itself (docs/AUDIO-ENGINE.md), whoever runs saqad names them. dsper builds and installs
+them today, as the engine's stand-in (dsper's owner decisions #18 to #20), under these names:
 
-| Loopback | Channels | macOS | Linux: the side saqa plays into | Linux: the side saqa reads |
+| Loopback | Channels | macOS | Linux: the side that is played into | Linux: the side that is read |
 |---|---|---|---|---|
-| streaming | 16 | `dsper stream 16ch` | `hw:CARD=dsperstream,DEV=0` | `hw:CARD=dsperstream,DEV=1` |
+| **receive**: what saqa receives; dsper reads it as its `stream` input | 16 | `stream in 16ch` | `hw:CARD=streamin,DEV=0` (saqa) | `hw:CARD=streamin,DEV=1` (dsper) |
+| **stream**: what saqa sends: dsper's mix or the system sound, as saqa chooses | 16 | `stream 16ch` | `hw:CARD=stream,DEV=0` (the source) | `hw:CARD=stream,DEV=1` (saqa) |
 | what the computer plays | 2 | `dsper system 2ch` | `hw:CARD=dspersystem,DEV=0` | `hw:CARD=dspersystem,DEV=1` |
-| what the DAW plays | 16 | `dsper daw 16ch` | | `hw:CARD=dsperdaw,DEV=1` |
+| what the DAW plays | 16 | `dsper daw 16ch` | `hw:CARD=dsperdaw,DEV=0` | `hw:CARD=dsperdaw,DEV=1` |
 
-**The setup to use.** A received stream may land in two loopbacks: the streaming loopback (16 channels) and
-the 2-channel loopback, so stereo playback always has a stereo device to land in. dsper routes both from there.
-A send link may read any of the three. Each sink's width is declared, so a channel a loopback does not have is
-refused before anything opens.
+`dsper stream 16ch` (`hw:CARD=dsperstream`) is gone: dsper split it into the two `stream` devices, with no
+alias for the old name. A machine with the old name needs dsper's devices installed again (`scripts/mac.sh
+driver`, or dsper's `linux/snd-aloop-dsper.conf`).
+
+**The setup to use.** A received stream lands in the receive loopback (16 channels) or the 2-channel loopback,
+so stereo playback always has a stereo device to land in. dsper routes both from there. A send link reads the
+`stream` loopback, which carries what saqa chose to send; it may also read `system` or `daw` directly. The
+word `stream` therefore names two devices: the receive loopback for a receive link, the `stream` loopback for a
+send link. Each sink's width is declared, so a channel a loopback does not have is refused before anything opens.
 
 macOS:
 
 ```sh
-saqad --sink 'dsper stream 16ch' --sink 'dsper system 2ch' \
-  --sink-width 'dsper stream 16ch=16' --sink-width 'dsper system 2ch=2' \
-  --alias 'stream=dsper stream 16ch' --alias 'system=dsper system 2ch' --alias 'daw=dsper daw 16ch' \
+saqad --sink 'stream in 16ch' --sink 'dsper system 2ch' \
+  --sink-width 'stream in 16ch=16' --sink-width 'dsper system 2ch=2' \
+  --alias-receive 'stream=stream in 16ch' --alias-send 'stream=stream 16ch' \
+  --alias 'system=dsper system 2ch' --alias 'daw=dsper daw 16ch' \
   --import-links ~/.config/dsper/streams.json
 ```
 
 Linux (play into `DEV=0`, read from `DEV=1`):
 
 ```sh
-saqad --sink 'hw:CARD=dsperstream,DEV=0' --sink 'plughw:CARD=dsperstream,DEV=0' \
+saqad --sink 'hw:CARD=streamin,DEV=0' --sink 'plughw:CARD=streamin,DEV=0' \
   --sink 'hw:CARD=dspersystem,DEV=0' --sink 'plughw:CARD=dspersystem,DEV=0' \
-  --sink-width 'hw:CARD=dsperstream,DEV=0=16' --sink-width 'plughw:CARD=dsperstream,DEV=0=16' \
+  --sink-width 'hw:CARD=streamin,DEV=0=16' --sink-width 'plughw:CARD=streamin,DEV=0=16' \
   --sink-width 'hw:CARD=dspersystem,DEV=0=2' --sink-width 'plughw:CARD=dspersystem,DEV=0=2' \
-  --alias-receive 'stream=hw:CARD=dsperstream,DEV=0' --alias-send 'stream=hw:CARD=dsperstream,DEV=1' \
+  --alias-receive 'stream=hw:CARD=streamin,DEV=0' --alias-send 'stream=hw:CARD=stream,DEV=1' \
   --alias-receive 'system=hw:CARD=dspersystem,DEV=0' --alias-send 'system=hw:CARD=dspersystem,DEV=1' \
   --alias 'daw=hw:CARD=dsperdaw,DEV=1' \
   --import-links ~/.config/dsper/streams.json
@@ -112,15 +120,15 @@ The same as a file (say `~/.config/dsper/saqad.json`, passed with `--config`), L
 ```json
 {
   "sinks": [
-    "hw:CARD=dsperstream,DEV=0", "plughw:CARD=dsperstream,DEV=0",
+    "hw:CARD=streamin,DEV=0", "plughw:CARD=streamin,DEV=0",
     "hw:CARD=dspersystem,DEV=0", "plughw:CARD=dspersystem,DEV=0"
   ],
   "sink_widths": {
-    "hw:CARD=dsperstream,DEV=0": 16, "plughw:CARD=dsperstream,DEV=0": 16,
+    "hw:CARD=streamin,DEV=0": 16, "plughw:CARD=streamin,DEV=0": 16,
     "hw:CARD=dspersystem,DEV=0": 2, "plughw:CARD=dspersystem,DEV=0": 2
   },
   "aliases": {
-    "stream": { "send": "hw:CARD=dsperstream,DEV=1", "receive": "hw:CARD=dsperstream,DEV=0" },
+    "stream": { "send": "hw:CARD=stream,DEV=1", "receive": "hw:CARD=streamin,DEV=0" },
     "system": { "send": "hw:CARD=dspersystem,DEV=1", "receive": "hw:CARD=dspersystem,DEV=0" },
     "daw": "hw:CARD=dsperdaw,DEV=1"
   },
@@ -131,21 +139,25 @@ The same as a file (say `~/.config/dsper/saqad.json`, passed with `--config`), L
 Declare the `plughw` widths too: `plughw` offers any channel count, so only the declared width catches a third
 channel on a 2-channel loopback.
 
-Things to know about the 2-channel loopback today:
+Things to know:
 
-- **It is what the computer plays.** A stream received there is mixed with the computer's own sound before
-  dsper's DSP; dsper's routing decides where both go. A dedicated 2-channel receive loopback from audio-engine
-  would keep them apart (docs/AUDIO-ENGINE.md lists it as an ask). Pointing saqad at it is only a change of
-  names here.
-- **On Linux it takes one client.** dsper loads snd-aloop with `pcm_substreams=1`, so `DEV=0` takes one player.
-  On a headless machine (a Pi by the speakers) it is free; where the desktop holds it, the link goes to
-  `failed` with the device's busy error in its detail. The same limit holds for the streaming loopback.
-- A receive into `daw` is refused (422): that loopback carries what the DAW plays, and receiving into it is
+- **The 2-channel loopback is what the computer plays.** A stream received there is mixed with the computer's
+  own sound before dsper's DSP; dsper's routing decides where both go. A dedicated 2-channel receive loopback
+  from audio-engine would keep them apart (docs/AUDIO-ENGINE.md lists it as an ask). Pointing saqad at it is
+  only a change of names here.
+- **On Linux each side takes one client.** dsper loads snd-aloop with `pcm_substreams=1`. saqa is the only
+  player of `streamin` and the only reader of `stream`, so those are free. `dspersystem`'s `DEV=0` is what the
+  desktop plays into: where the desktop holds it, a stereo link there goes to `failed` with the device's busy
+  error in its detail.
+- **A receive into `daw` is refused (422):** that loopback carries what the DAW plays, and receiving into it is
   dsper's routing to decide.
+- **Choosing what `stream 16ch` carries** (dsper's mix, the system sound, or another source) is saqa's by the
+  owner's decision (#20, the engine's D-095). It needs the engine to route a source into the loopback; until
+  then, whoever runs dsper routes it.
 
-**dsper's old behaviour, exactly.** `dsper-stream` also let a receive link play into `dsper daw Nch`
-(`is_dsper_input` and `resolve`, dsper@7afd988 `crates/dsper-stream/src/lib.rs:69-106`). To keep that, add it
-as a sink, with its width, and on Linux give `daw` its `DEV=0` side for receiving:
+**dsper's old behaviour.** `dsper-stream` also let a receive link play into `dsper daw Nch` (`is_dsper_input`
+and `resolve`, dsper@7afd988 `crates/dsper-stream/src/lib.rs:69-106`). To keep that, add it as a sink, with its
+width, and on Linux give `daw` its `DEV=0` side for receiving:
 
 ```sh
 # macOS, in addition to the above
@@ -156,8 +168,8 @@ as a sink, with its width, and on Linux give `daw` its `DEV=0` side for receivin
 --alias-receive 'daw=hw:CARD=dsperdaw,DEV=0'
 ```
 
-Never a sink, either way: `dsper in 16ch` / `hw:CARD=dsperin16,…` (what dsper hands back to apps), any interface,
-and on Linux any `DEV=1` side.
+Never a sink, either way: the `stream` loopback (`stream 16ch`, `hw:CARD=stream,…`: what is sent), `dsper in
+16ch` / `hw:CARD=dsperin16,…` (what dsper hands back to apps), any interface, and on Linux any `DEV=1` side.
 
 ## More loopbacks later
 

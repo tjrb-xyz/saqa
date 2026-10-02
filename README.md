@@ -23,9 +23,9 @@ MIT ([LICENSE](LICENSE)). libroc (MPL-2.0) is loaded at run time, never linked.
 ```sh
 scripts/roc.sh                    # libroc 0.4 into .saqa/lib (SCons, ragel, CMake; on Linux autotools too)
 cargo build --release
-target/release/saqad --sink 'dsper stream 16ch' --sink 'dsper system 2ch' \
-  --sink-width 'dsper stream 16ch=16' --sink-width 'dsper system 2ch=2' \
-  --alias 'stream=dsper stream 16ch' --alias 'system=dsper system 2ch'
+target/release/saqad --sink 'stream in 16ch' --sink 'dsper system 2ch' \
+  --sink-width 'stream in 16ch=16' --sink-width 'dsper system 2ch=2' \
+  --alias-receive 'stream=stream in 16ch' --alias-send 'stream=stream 16ch' --alias 'system=dsper system 2ch'
 curl -H "Authorization: Bearer $(cat ~/.config/saqa/token)" http://127.0.0.1:8486/stream/v1/state
 ```
 
@@ -45,33 +45,35 @@ in [docs/CONFIG.md](docs/CONFIG.md); this is the summary to wire against.
 | A file instead | `--config FILE`: the same as JSON (`port`, `token_file`, `sinks`, `sink_widths`, `aliases`, `links`, `import_links`, `allow_origins`, `allow_hosts`) |
 | New loopbacks | add them to the config file and send saqad `SIGHUP`: no restart. Links re-check; a link into a loopback that is gone waits, and starts again when it is back |
 
-A received stream lands in the streaming loopback (16 channels) or the 2-channel loopback, so stereo always has a
-stereo device; a send link may read either, or the `daw` loopback. The loopbacks show under dsper's names today.
-macOS:
+A received stream lands in the receive loopback (`stream in 16ch`) or the 2-channel loopback, so stereo always has
+a stereo device. `stream` sends from the `stream 16ch` loopback, which carries dsper's mix or the system sound as
+saqa chooses; a send link may also read `system` or `daw`. The loopbacks are dsper's build of the engine's devices
+today (dsper's owner decisions #18 to #20; `dsper stream 16ch` was split into these two). macOS:
 
 ```sh
-saqad --sink 'dsper stream 16ch' --sink 'dsper system 2ch' \
-  --sink-width 'dsper stream 16ch=16' --sink-width 'dsper system 2ch=2' \
-  --alias 'stream=dsper stream 16ch' --alias 'system=dsper system 2ch' --alias 'daw=dsper daw 16ch' \
+saqad --sink 'stream in 16ch' --sink 'dsper system 2ch' \
+  --sink-width 'stream in 16ch=16' --sink-width 'dsper system 2ch=2' \
+  --alias-receive 'stream=stream in 16ch' --alias-send 'stream=stream 16ch' \
+  --alias 'system=dsper system 2ch' --alias 'daw=dsper daw 16ch' \
   --import-links ~/.config/dsper/streams.json
 ```
 
 Linux (play into `DEV=0`, read from `DEV=1`):
 
 ```sh
-saqad --sink 'hw:CARD=dsperstream,DEV=0' --sink 'plughw:CARD=dsperstream,DEV=0' \
+saqad --sink 'hw:CARD=streamin,DEV=0' --sink 'plughw:CARD=streamin,DEV=0' \
   --sink 'hw:CARD=dspersystem,DEV=0' --sink 'plughw:CARD=dspersystem,DEV=0' \
-  --sink-width 'hw:CARD=dsperstream,DEV=0=16' --sink-width 'plughw:CARD=dsperstream,DEV=0=16' \
+  --sink-width 'hw:CARD=streamin,DEV=0=16' --sink-width 'plughw:CARD=streamin,DEV=0=16' \
   --sink-width 'hw:CARD=dspersystem,DEV=0=2' --sink-width 'plughw:CARD=dspersystem,DEV=0=2' \
-  --alias-receive 'stream=hw:CARD=dsperstream,DEV=0' --alias-send 'stream=hw:CARD=dsperstream,DEV=1' \
+  --alias-receive 'stream=hw:CARD=streamin,DEV=0' --alias-send 'stream=hw:CARD=stream,DEV=1' \
   --alias-receive 'system=hw:CARD=dspersystem,DEV=0' --alias-send 'system=hw:CARD=dspersystem,DEV=1' \
   --alias 'daw=hw:CARD=dsperdaw,DEV=1' \
   --import-links ~/.config/dsper/streams.json
 ```
 
-A receive into `daw` is 422 unless it is added as a sink (dsper allowed it; docs/CONFIG.md has the flags). On
-Linux each loopback's `DEV=0` takes one player (`pcm_substreams=1`), so where the desktop holds `dspersystem`,
-a stereo link there fails and says the device is busy.
+A receive into `daw` or `stream 16ch` is 422 (dsper allowed `daw`; docs/CONFIG.md has the flags). On Linux each
+loopback side takes one client (`pcm_substreams=1`): saqa is the only one on `streamin` and `stream`, but where
+the desktop holds `dspersystem`, a stereo link there fails and says the device is busy.
 
 **The contract** is dsper's, unchanged: `GET /state` → `{available, detail, links}`, `GET /links`,
 `PUT /links/{id}` with a `LinkSpec` (400 invalid, 422 a receive link not into an allowed loopback, 503 no libroc),

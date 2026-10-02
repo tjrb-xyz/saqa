@@ -30,8 +30,9 @@ links' ranges may not overlap); `latency_ms` 10–2000, default 100. `device` is
 (`system`, `daw`, `stream` from dsper), resolved for the link's direction, or a device name. A receive link's
 device, once resolved, must be one of saqad's sinks: otherwise 422, and with no sinks configured always 422. When
 saqad knows the sink's width (`sink_widths`), a channel past it is 400; that check runs after the 422 one. In the
-recommended setup the sinks are the streaming loopback (`stream`, 16 channels) and a 2-channel loopback
-(`system`), so a stereo stream always has a stereo device to land in.
+recommended setup the sinks are the receive loopback (`stream`: `stream in 16ch`, 16 channels) and a 2-channel
+loopback (`system`), so a stereo stream always has a stereo device to land in. For a send link, `stream` is the
+`stream 16ch` loopback, which saqa manages (docs/CONFIG.md).
 
 A `LinkView` is the `LinkSpec` (its `device` resolved) plus `id`, `state` (`starting`, `running`, `failed`),
 `detail` (why it failed), `connections` (senders streaming to a receive link now), `e2e_latency_ms` (when Roc
@@ -55,8 +56,10 @@ Nothing in the routes, bodies, statuses or `LinkSpec`/`LinkView`. Only:
   named dsper's `scripts/mac.sh roc` / `scripts/linux.sh roc` and `DSPER_LIBROC`.
 - **Sinks and aliases are configuration.** `system`, `daw` and `stream`, and which loopbacks may receive, mean
   what saqad is told (docs/CONFIG.md, "Pointing saqad at the loopbacks"); unconfigured, it allows no receive link.
-  The recommended setup allows the streaming loopback and the 2-channel `system` loopback, so a receive link into
-  `daw`, which dsper allowed, is now 422 unless it is added as a sink.
+  The recommended setup allows the receive loopback (`stream in 16ch`) and the 2-channel `system` loopback, so a
+  receive link into `daw`, which dsper allowed, is now 422 unless it is added as a sink. dsper's `dsper stream
+  16ch` is gone (dsper's owner decision #20): `stream` now means `stream in 16ch` to receive and `stream 16ch` to
+  send.
 - **A new 400.** When saqad knows a sink's width, a receive link with a channel past it is 400 at PUT ("dsper
   system 2ch has no channel 3 (2 channels)"). dsper answered 200 and then failed the link with the same text.
 - **Kept links wait instead of vanishing.** dsper dropped a kept link it could not restart at the next save;

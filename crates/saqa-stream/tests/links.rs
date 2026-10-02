@@ -19,7 +19,7 @@ fn dsper() -> Devices {
         sinks: vec![
             "dsper system 2ch".into(),
             "dsper daw 16ch".into(),
-            "dsper stream 16ch".into(),
+            "stream in 16ch".into(),
         ],
         ..Default::default()
     }
@@ -60,7 +60,7 @@ fn eventually<T>(what: &str, secs: u64, mut f: impl FnMut() -> Option<T>) -> T {
 }
 
 /// The vintage-corner rig: the main machine sends daw 5–6; the corner
-/// machine plays them into its dsper stream input, channels 1–2.
+/// machine plays them into its receive loopback, channels 1–2.
 #[test]
 fn channels_travel_from_one_machine_into_the_others_stream_input() {
     if !roc_here() {
@@ -76,7 +76,7 @@ fn channels_travel_from_one_machine_into_the_others_stream_input() {
     b.put(
         "from-studio",
         LinkSpec::Receive {
-            device: "dsper stream 16ch".into(),
+            device: "stream in 16ch".into(),
             channels: vec![0, 1],
             port,
             latency_ms: 60,
@@ -95,7 +95,7 @@ fn channels_travel_from_one_machine_into_the_others_stream_input() {
 
     let frame = eventually("the corner never heard the studio", 5, || {
         b_audio
-            .played("dsper stream 16ch")
+            .played("stream in 16ch")
             .filter(|f| f[0].abs() > 1e-3 && f[1].abs() > 1e-3)
     });
     assert!(
@@ -121,7 +121,7 @@ fn channels_travel_from_one_machine_into_the_others_stream_input() {
     assert!(a.delete("corner"));
     eventually("silence after the sender stopped", 5, || {
         b_audio
-            .played("dsper stream 16ch")
+            .played("stream in 16ch")
             .filter(|f| f.iter().all(|s| s.abs() < 1e-3))
     });
     b.shutdown();
@@ -136,7 +136,7 @@ fn a_device_that_is_not_there_fails_the_link_and_says_why() {
     s.put(
         "x",
         LinkSpec::Receive {
-            device: "dsper stream 16ch".into(),
+            device: "stream in 16ch".into(),
             channels: vec![16],
             port: free_base_port(),
             latency_ms: 100,
@@ -157,7 +157,7 @@ fn links_are_kept_and_come_back_with_saqad() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("streams.json");
     let spec = LinkSpec::Receive {
-        device: "dsper stream 16ch".into(),
+        device: "stream in 16ch".into(),
         channels: vec![0, 1],
         port: free_base_port(),
         latency_ms: 100,
@@ -256,7 +256,7 @@ fn sixteen_channels_arrive_each_on_its_own_channel() {
     b.put(
         "in",
         LinkSpec::Receive {
-            device: "dsper stream 16ch".into(),
+            device: "stream in 16ch".into(),
             channels: (0..16).collect(),
             port,
             latency_ms: 60,
@@ -274,7 +274,7 @@ fn sixteen_channels_arrive_each_on_its_own_channel() {
     .unwrap();
     let frame = eventually("sixteen channels never arrived", 5, || {
         b_audio
-            .played("dsper stream 16ch")
+            .played("stream in 16ch")
             .filter(|f| f.iter().all(|s| s.abs() > 1e-3))
     });
     for (c, s) in frame.iter().enumerate() {
@@ -286,7 +286,7 @@ fn sixteen_channels_arrive_each_on_its_own_channel() {
     }
     // And they stay there: sample it again a second later.
     std::thread::sleep(Duration::from_secs(1));
-    let later = b_audio.played("dsper stream 16ch").unwrap();
+    let later = b_audio.played("stream in 16ch").unwrap();
     for (c, s) in later.iter().enumerate() {
         assert!(
             (s - (c + 1) as f32 / 32.0).abs() < 1e-3,
@@ -302,7 +302,7 @@ fn sixteen_channels_arrive_each_on_its_own_channel() {
 fn dsper_widths() -> Devices {
     let mut d = dsper();
     d.set_width("dsper system 2ch=2").unwrap();
-    d.set_width("dsper stream 16ch=16").unwrap();
+    d.set_width("stream in 16ch=16").unwrap();
     d
 }
 
@@ -378,7 +378,7 @@ fn kept_links_wait_instead_of_vanishing() {
         &file,
         serde_json::to_string(&json!({
             "in": {"direction": "receive", "device": "EVO16", "channels": [0, 1], "port": 20000},
-            "ok": {"direction": "receive", "device": "dsper stream 16ch", "channels": [0, 1], "port": 20010},
+            "ok": {"direction": "receive", "device": "stream in 16ch", "channels": [0, 1], "port": 20010},
         }))
         .unwrap(),
     )
@@ -433,7 +433,7 @@ fn a_reload_parks_and_resumes_a_link() {
     )
     .unwrap();
     let stream_only = Devices {
-        sinks: vec!["dsper stream 16ch".into()],
+        sinks: vec!["stream in 16ch".into()],
         ..Default::default()
     };
     let done = s.set_devices(stream_only).unwrap();
@@ -449,7 +449,7 @@ fn a_reload_parks_and_resumes_a_link() {
         ..Default::default()
     };
     assert!(s.set_devices(every).is_err(), "a sink of every device");
-    assert_eq!(s.devices().sinks, ["dsper stream 16ch"], "nothing changed");
+    assert_eq!(s.devices().sinks, ["stream in 16ch"], "nothing changed");
 
     let done = s.set_devices(dsper_widths()).unwrap();
     assert_eq!(done.resumed, ["x"]);

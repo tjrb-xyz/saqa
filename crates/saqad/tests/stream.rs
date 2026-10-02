@@ -83,7 +83,7 @@ fn call(port: u16, method: &str, path: &str, body: Option<Value>) -> (u16, Value
 #[test]
 fn saqad_serves_streams_and_holds_the_safety_line() {
     let d = start(
-        &["--memory", "--sink", "dsper stream 16ch"],
+        &["--memory", "--sink", "stream in 16ch"],
         "/stream/v1/health",
     );
     let (status, _) = agent()
@@ -111,7 +111,7 @@ fn saqad_serves_streams_and_holds_the_safety_line() {
         "PUT",
         "/stream/v1/links/from-studio",
         Some(
-            json!({"direction": "receive", "device": "dsper stream 16ch", "channels": [0, 1],
+            json!({"direction": "receive", "device": "stream in 16ch", "channels": [0, 1],
                     "port": free_port().clamp(1024, 60000)}),
         ),
     );
@@ -166,7 +166,7 @@ fn without_sinks_nothing_is_received() {
         "PUT",
         "/stream/v1/links/from-studio",
         Some(
-            json!({"direction": "receive", "device": "dsper stream 16ch", "channels": [0, 1], "port": 20000}),
+            json!({"direction": "receive", "device": "stream in 16ch", "channels": [0, 1], "port": 20000}),
         ),
     );
     assert_eq!(status, 422, "{v}");
@@ -182,7 +182,7 @@ fn sinks_and_aliases_come_from_the_config_file() {
     std::fs::create_dir_all(dir.join("saqa")).unwrap();
     std::fs::write(
         dir.join("saqa/saqad.json"),
-        r#"{"sinks": ["dsper * 16ch"], "aliases": {"stream": "dsper stream 16ch"}}"#,
+        r#"{"sinks": ["stream in *"], "aliases": {"stream": "stream in 16ch"}}"#,
     )
     .unwrap();
     let d = start_in(&dir, &["--memory"], "/stream/v1/health");
@@ -199,7 +199,7 @@ fn sinks_and_aliases_come_from_the_config_file() {
     );
     if state["available"] == true {
         assert_eq!(status, 200, "{v}");
-        assert_eq!(v["device"], "dsper stream 16ch", "the alias, resolved: {v}");
+        assert_eq!(v["device"], "stream in 16ch", "the alias, resolved: {v}");
     } else {
         assert_eq!(status, 503, "{v}");
     }
@@ -242,20 +242,22 @@ fn dspers_kept_links_are_imported_once() {
     assert!(old.exists(), "dsper's file is left where it was");
 }
 
-/// docs/CONFIG.md's macOS setup: a received stream lands in the streaming
-/// loopback or the 2-channel one; a send link may read any loopback.
+/// docs/CONFIG.md's macOS setup: a received stream lands in the receive
+/// loopback or the 2-channel one; `stream` sends from the stream loopback.
 const RECOMMENDED: &[&str] = &[
     "--memory",
     "--sink",
-    "dsper stream 16ch",
+    "stream in 16ch",
     "--sink",
     "dsper system 2ch",
     "--sink-width",
-    "dsper stream 16ch=16",
+    "stream in 16ch=16",
     "--sink-width",
     "dsper system 2ch=2",
-    "--alias",
-    "stream=dsper stream 16ch",
+    "--alias-receive",
+    "stream=stream in 16ch",
+    "--alias-send",
+    "stream=stream 16ch",
     "--alias",
     "system=dsper system 2ch",
     "--alias",
@@ -291,7 +293,7 @@ fn the_recommended_setup_receives_into_the_streaming_and_the_stereo_loopback() {
         .as_str()
         .unwrap()
         .contains("no channel 3 (2 channels)"));
-    for into in ["daw", "dsper daw 16ch", "EVO16"] {
+    for into in ["daw", "dsper daw 16ch", "stream 16ch", "EVO16"] {
         let (status, v) = call(
             d.1,
             "PUT",
@@ -311,6 +313,21 @@ fn the_recommended_setup_receives_into_the_streaming_and_the_stereo_loopback() {
     assert_eq!(status, ok, "{v}");
     if ok == 200 {
         assert_eq!(v["device"], "dsper daw 16ch", "{v}");
+    }
+    let (status, v) = call(
+        d.1,
+        "PUT",
+        "/stream/v1/links/sent",
+        Some(
+            json!({"direction": "send", "device": "stream", "channels": [0, 1], "to": "127.0.0.1:20010"}),
+        ),
+    );
+    assert_eq!(status, ok, "{v}");
+    if ok == 200 {
+        assert_eq!(
+            v["device"], "stream 16ch",
+            "a send reads the stream loopback: {v}"
+        );
     }
 }
 
@@ -344,11 +361,11 @@ fn said(args: &[&str]) -> String {
 fn saqad_says_where_a_stereo_stream_can_land() {
     let text = said(RECOMMENDED);
     assert!(
-        text.contains("receives into: dsper stream 16ch (16ch), dsper system 2ch (2ch)"),
+        text.contains("receives into: stream in 16ch (16ch), dsper system 2ch (2ch)"),
         "{text}"
     );
     assert!(!text.contains("no sink is declared 2"), "{text}");
-    let text = said(&["--memory", "--sink", "dsper stream 16ch"]);
+    let text = said(&["--memory", "--sink", "stream in 16ch"]);
     assert!(
         text.contains("no sink is declared 2 or more channels wide"),
         "{text}"
@@ -362,7 +379,7 @@ fn saqad_says_where_a_stereo_stream_can_land() {
 fn a_reload_changes_what_may_be_received() {
     let dir = temp_dir();
     let file = dir.join("saqad.json");
-    std::fs::write(&file, r#"{"sinks": ["dsper stream 16ch"]}"#).unwrap();
+    std::fs::write(&file, r#"{"sinks": ["stream in 16ch"]}"#).unwrap();
     let d = start_in(
         &dir,
         &["--memory", "--config", file.to_str().unwrap()],
@@ -380,7 +397,7 @@ fn a_reload_changes_what_may_be_received() {
     let (status, v) = call(d.1, "PUT", "/stream/v1/links/booth", Some(booth(20000)));
     assert_eq!(status, 422, "not a sink yet: {v}");
 
-    std::fs::write(&file, r#"{"sinks": ["dsper stream 16ch", "ae rx *"]}"#).unwrap();
+    std::fs::write(&file, r#"{"sinks": ["stream in 16ch", "ae rx *"]}"#).unwrap();
     hup();
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
