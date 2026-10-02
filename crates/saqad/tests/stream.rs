@@ -267,16 +267,16 @@ fn the_recommended_setup_receives_into_the_streaming_and_the_stereo_loopback() {
     let d = start(RECOMMENDED, "/stream/v1/health");
     let (_, state) = call(d.1, "GET", "/stream/v1/state", None);
     let ok = if state["available"] == true { 200 } else { 503 };
-    let receive = |device: &str, channels: Value| {
-        json!({"direction": "receive", "device": device, "channels": channels,
-               "port": free_port().clamp(1024, 60000)})
-    };
-    for (id, into) in [("in", "stream"), ("stereo", "system")] {
+    // One base: two links' three-port ranges must not overlap (macOS hands
+    // out consecutive free ports).
+    let base = free_port().clamp(1024, 60000);
+    let receive = |device: &str, channels: Value, port: u16| json!({"direction": "receive", "device": device, "channels": channels, "port": port});
+    for (id, into, port) in [("in", "stream", base), ("stereo", "system", base + 10)] {
         let (status, v) = call(
             d.1,
             "PUT",
             &format!("/stream/v1/links/{id}"),
-            Some(receive(into, json!([0, 1]))),
+            Some(receive(into, json!([0, 1]), port)),
         );
         assert_eq!(status, ok, "{into}: {v}");
     }
@@ -284,7 +284,7 @@ fn the_recommended_setup_receives_into_the_streaming_and_the_stereo_loopback() {
         d.1,
         "PUT",
         "/stream/v1/links/x",
-        Some(receive("system", json!([0, 2]))),
+        Some(receive("system", json!([0, 2]), base + 20)),
     );
     assert_eq!(status, 400, "{v}");
     assert!(v["error"]
@@ -296,7 +296,7 @@ fn the_recommended_setup_receives_into_the_streaming_and_the_stereo_loopback() {
             d.1,
             "PUT",
             "/stream/v1/links/x",
-            Some(receive(into, json!([0, 1]))),
+            Some(receive(into, json!([0, 1]), base + 20)),
         );
         assert_eq!(status, 422, "{into}: {v}");
     }
